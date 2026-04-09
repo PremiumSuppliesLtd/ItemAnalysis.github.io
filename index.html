@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Item Intelligence | Megamart</title>
+    <meta name="description"
+        content="Advanced item analysis dashboard - Track customer purchase patterns, dropped items, and buying trends">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <!-- Global Loader -->
+    <div class="global-loader" id="globalLoader">
+        <div class="loader-spinner"></div>
+        <p class="loader-text">Loading Intelligence Data...</p>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Top Navigation Bar -->
+    <nav class="top-navbar">
+        <div class="navbar-brand">
+            <span class="navbar-title">📊 Item Intelligence</span>
+        </div>
+
+        <div class="slide-nav-wrapper">
+            <div class="slide-nav">
+                <button class="report-tab active" data-tab="overview">
+                    <span class="tab-icon">🏠</span>Overview
+                </button>
+                <button class="report-tab" data-tab="dropped">
+                    <span class="tab-icon">🛑</span>Dropped Items
+                </button>
+                <button class="report-tab" data-tab="heatmap">
+                    <span class="tab-icon">🗓️</span>Purchase Heatmap
+                </button>
+                <button class="report-tab" data-tab="declining">
+                    <span class="tab-icon">📉</span>Declining
+                </button>
+                <button class="report-tab" data-tab="topitems">
+                    <span class="tab-icon">🏆</span>Top Items
+                </button>
+                <button class="report-tab" data-tab="trends">
+                    <span class="tab-icon">📈</span>Trends
+                </button>
+                <button class="report-tab" data-tab="deepdive">
+                    <span class="tab-icon">🔍</span>Deep Dive
+                </button>
+                <button class="report-tab" data-tab="reorder">
+                    <span class="tab-icon">🛒</span>Smart Reorder
+                </button>
+            </div>
+        </div>
+
+        <div class="navbar-actions">
+            <div class="year-range-filter" id="yearRangeFilter">
+                <select class="year-select" id="yearFrom" title="From Year">
+                    <option value="">From</option>
+                </select>
+                <span class="year-range-sep">→</span>
+                <select class="year-select" id="yearTo" title="To Year">
+                    <option value="">To</option>
+                </select>
+            </div>
+            <button class="nav-action-btn" id="refreshBtn" title="Refresh Data">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-9.21l5.67-4.13" />
+                </svg>
+            </button>
+            <button class="nav-action-btn" id="themeBtn" title="Toggle Theme">☀️</button>
+        </div>
+    </nav>
+
+    <!-- Main App Container -->
+    <div class="app-container">
+
+        <!-- ====== OVERVIEW TAB ====== -->
+        <div id="tab-overview" class="tab-content active-tab">
+            <!-- Hero Section -->
+            <div class="hero-section" id="heroSection">
+                <h1 class="hero-title">
+                    <span class="hero-title-icon">🧠</span>
+                    Customer Item Intelligence
+                </h1>
+                <p class="hero-subtitle">
+                    Comprehensive analysis of customer purchase patterns. Identify dropped items, declining trends, and
+                    revenue opportunities before they become losses.
+                </p>
+                <div class="hero-stats">
+                    <div class="hero-stat">
+                        <span class="hero-stat-value" id="heroTotalCustomers">0</span>
+                        <span class="hero-stat-label">Total Customers</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat-value" id="heroTotalItems">0</span>
+                        <span class="hero-stat-label">Unique Items</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat-value" id="heroTotalQty">0</span>
+                        <span class="hero-stat-label">Total Qty (YTD)</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat-value" id="heroMonthsCovered">0</span>
+                        <span class="hero-stat-label">Months Covered</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- KPI Strip -->
+            <div class="kpi-strip" id="kpiStrip">
+                <div class="kpi-card kpi-customers">
+                    <div class="kpi-icon-wrap">👥</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Active Customers</div>
+                        <div class="kpi-value" id="kpiActiveCustomers">0</div>
+                    </div>
+                </div>
+                <div class="kpi-card kpi-items">
+                    <div class="kpi-icon-wrap">📦</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Unique Items</div>
+                        <div class="kpi-value" id="kpiUniqueItems">0</div>
+                    </div>
+                </div>
+                <div class="kpi-card kpi-active">
+                    <div class="kpi-icon-wrap">✅</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Active Pairs</div>
+                        <div class="kpi-value" id="kpiActivePairs">0</div>
+                    </div>
+                </div>
+                <div class="kpi-card kpi-dropped">
+                    <div class="kpi-icon-wrap">🛑</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Dropped Items</div>
+                        <div class="kpi-value" id="kpiDropped">0</div>
+                    </div>
+                </div>
+                <div class="kpi-card kpi-declining">
+                    <div class="kpi-icon-wrap">📉</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Declining</div>
+                        <div class="kpi-value" id="kpiDeclining">0</div>
+                    </div>
+                </div>
+                <div class="kpi-card kpi-months">
+                    <div class="kpi-icon-wrap">📅</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Data Range</div>
+                        <div class="kpi-value" id="kpiMonths">0</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Overview Charts -->
+            <div class="charts-grid">
+                <div class="chart-card" style="animation-delay: 0.1s">
+                    <div class="chart-header">
+                        <span class="chart-header-icon">📊</span>
+                        <span class="chart-header-title">Monthly Purchase Volume</span>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="chartMonthlyVolume"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card" style="animation-delay: 0.2s">
+                    <div class="chart-header">
+                        <span class="chart-header-icon">🍩</span>
+                        <span class="chart-header-title">Top 10 Customers by Qty</span>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="chartTopCustomers"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="charts-grid">
+                <div class="chart-card" style="animation-delay: 0.3s">
+                    <div class="chart-header">
+                        <span class="chart-header-icon">📦</span>
+                        <span class="chart-header-title">Top 15 Items by Total Qty</span>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="chartTopItems"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card" style="animation-delay: 0.4s">
+                    <div class="chart-header">
+                        <span class="chart-header-icon">👥</span>
+                        <span class="chart-header-title">Customer Activity Status</span>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="chartActivityStatus"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ====== DROPPED ITEMS TAB ====== -->
+        <div id="tab-dropped" class="tab-content">
+            <div class="section-header">
+                <div class="section-icon danger">🛑</div>
+                <div>
+                    <h2 class="section-title">Dropped Items Report</h2>
+                    <p class="section-subtitle">Customers who stopped buying items they used to purchase regularly</p>
+                </div>
+                <span class="section-badge" id="droppedBadge">0 customers</span>
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label class="filter-label">Search Customer</label>
+                    <input type="text" class="filter-input" id="droppedCustomerSearch"
+                        placeholder="Type customer name..." autocomplete="off">
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Inactive Since (Months)</label>
+                    <select class="filter-input" id="droppedMonthsFilter">
+                        <option value="1">1+ Month</option>
+                        <option value="2" selected>2+ Months</option>
+                        <option value="3">3+ Months</option>
+                        <option value="6">6+ Months</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Sort By</label>
+                    <select class="filter-input" id="droppedSortBy">
+                        <option value="months_desc">Months Inactive (High→Low)</option>
+                        <option value="items_desc">Items Dropped (High→Low)</option>
+                        <option value="customer_asc">Customer Name (A→Z)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <div class="table-scroll">
+                    <table class="data-table" id="droppedTable">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Customer</th>
+                                <th>Item Code</th>
+                                <th>Last Purchase Month</th>
+                                <th class="text-right">Last Qty</th>
+                                <th class="text-right">Avg Qty/Month</th>
+                                <th class="text-center">Months Inactive</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="droppedBody">
+                            <tr>
+                                <td colspan="8" class="empty-msg">Loading data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ====== HEATMAP TAB ====== -->
+        <div id="tab-heatmap" class="tab-content">
+            <div class="section-header">
+                <div class="section-icon info">🗓️</div>
+                <div>
+                    <h2 class="section-title">Purchase Frequency Heatmap</h2>
+                    <p class="section-subtitle">Visual month-by-month purchase grid — identify gaps at a glance</p>
+                </div>
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label class="filter-label">Search Customer</label>
+                    <input type="text" class="filter-input" id="heatmapCustomerSearch"
+                        placeholder="Type customer name..." autocomplete="off">
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Search Item</label>
+                    <input type="text" class="filter-input" id="heatmapItemSearch" placeholder="Type item code..."
+                        autocomplete="off">
+                </div>
+                <div class="filter-group" style="max-width: 120px;">
+                    <label class="filter-label">Top N</label>
+                    <select class="filter-input" id="heatmapLimit">
+                        <option value="20">20</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="999">All</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="heatmap-container" id="heatmapContainer">
+                <table class="heatmap-table" id="heatmapTable">
+                    <thead id="heatmapHead">
+                        <tr>
+                            <th>Loading...</th>
+                        </tr>
+                    </thead>
+                    <tbody id="heatmapBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ====== DECLINING TAB ====== -->
+        <div id="tab-declining" class="tab-content">
+            <div class="section-header">
+                <div class="section-icon warning">📉</div>
+                <div>
+                    <h2 class="section-title">Declining Customers</h2>
+                    <p class="section-subtitle">Customers whose purchase quantities are decreasing month over month</p>
+                </div>
+                <span class="section-badge warning" id="decliningBadge">0 pairs</span>
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label class="filter-label">Search Customer</label>
+                    <input type="text" class="filter-input" id="decliningCustomerSearch"
+                        placeholder="Type customer name..." autocomplete="off">
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Min Decline %</label>
+                    <select class="filter-input" id="decliningThreshold">
+                        <option value="10">10%+</option>
+                        <option value="25">25%+</option>
+                        <option value="50" selected>50%+</option>
+                        <option value="75">75%+</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <div class="table-scroll">
+                    <table class="data-table" id="decliningTable">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Customer</th>
+                                <th>Item Code</th>
+                                <th class="text-right">Peak Qty</th>
+                                <th>Peak Month</th>
+                                <th class="text-right">Latest Qty</th>
+                                <th>Latest Month</th>
+                                <th class="text-right">Decline %</th>
+                                <th>Trend</th>
+                            </tr>
+                        </thead>
+                        <tbody id="decliningBody">
+                            <tr>
+                                <td colspan="9" class="empty-msg">Loading data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ====== TOP ITEMS TAB ====== -->
+        <div id="tab-topitems" class="tab-content">
+            <div class="section-header">
+                <div class="section-icon success">🏆</div>
+                <div>
+                    <h2 class="section-title">Top Items by Customer</h2>
+                    <p class="section-subtitle">Most purchased items per customer — ranked by total quantity</p>
+                </div>
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label class="filter-label">Select Customer</label>
+                    <select class="filter-input" id="topItemsCustomerSelect">
+                        <option value="ALL">All Customers</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Show Top N</label>
+                    <select class="filter-input" id="topItemsLimit">
+                        <option value="10">Top 10</option>
+                        <option value="20" selected>Top 20</option>
+                        <option value="50">Top 50</option>
+                        <option value="999">All</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <div class="chart-header">
+                        <span class="chart-header-icon">📊</span>
+                        <span class="chart-header-title">Top Items Chart</span>
+                    </div>
+                    <div class="chart-body" style="height: 400px;">
+                        <canvas id="chartTopItemsByCustomer"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <div class="table-scroll">
+                    <table class="data-table" id="topItemsTable">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Item Code</th>
+                                <th>Customer</th>
+                                <th class="text-right">Total Qty</th>
+                                <th class="text-right">Months Active</th>
+                                <th class="text-right">Avg Qty/Month</th>
+                                <th>Trend</th>
+                            </tr>
+                        </thead>
+                        <tbody id="topItemsBody">
+                            <tr>
+                                <td colspan="7" class="empty-msg">Loading data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ====== TRENDS TAB ====== -->
+        <div id="tab-trends" class="tab-content">
+            <div class="section-header">
+                <div class="section-icon purple">📈</div>
+                <div>
+                    <h2 class="section-title">Monthly Trend Analysis</h2>
+                    <p class="section-subtitle">Track purchase quantities over time for any customer or item</p>
+                </div>
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label class="filter-label">Select Customer</label>
+                    <select class="filter-input" id="trendCustomerSelect">
+                        <option value="ALL">All Customers (Total)</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Select Item (optional)</label>
+                    <select class="filter-input" id="trendItemSelect">
+                        <option value="ALL">All Items (Total)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="charts-grid" style="grid-template-columns: 1fr;">
+                <div class="chart-card">
+                    <div class="chart-header">
+                        <span class="chart-header-icon">📈</span>
+                        <span class="chart-header-title" id="trendChartTitle">Monthly Purchase Trend</span>
+                    </div>
+                    <div class="chart-body" style="height: 380px;">
+                        <canvas id="chartTrendLine"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <div class="table-scroll">
+                    <table class="data-table" id="trendTable">
+                        <thead>
+                            <tr>
+                                <th>Month</th>
+                                <th class="text-right">Total Qty</th>
+                                <th class="text-right">Unique Items</th>
+                                <th class="text-right">Change</th>
+                                <th>Trend</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trendBody">
+                            <tr>
+                                <td colspan="5" class="empty-msg">Loading data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ====== DEEP DIVE TAB ====== -->
+        <div id="tab-deepdive" class="tab-content">
+            <div class="section-header">
+                <div class="section-icon cyan">🔍</div>
+                <div>
+                    <h2 class="section-title">Item Deep Dive</h2>
+                    <p class="section-subtitle">Detailed analysis for a specific item — who buys it, purchase history,
+                        and gaps</p>
+                </div>
+            </div>
+
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label class="filter-label">Search Item Code</label>
+                    <input type="text" class="filter-input" id="deepDiveItemSearch" placeholder="Type item code..."
+                        list="deepDiveItemList" autocomplete="off">
+                    <datalist id="deepDiveItemList"></datalist>
+                </div>
+                <button class="filter-btn" id="deepDiveBtn">🔍 Analyze</button>
+            </div>
+
+            <div id="deepDiveResults" style="display: none;">
+                <!-- Item Summary Card -->
+                <div class="customer-detail-card" id="deepDiveSummary"></div>
+
+                <!-- Charts -->
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📊</span>
+                            <span class="chart-header-title">Monthly Qty Trend</span>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="chartDeepDiveTrend"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">👥</span>
+                            <span class="chart-header-title">Qty by Customer</span>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="chartDeepDiveCustomers"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Buyer Table -->
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table class="data-table" id="deepDiveTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Customer</th>
+                                    <th class="text-right">Total Qty</th>
+                                    <th>First Purchase</th>
+                                    <th>Last Purchase</th>
+                                    <th class="text-center">Months Active</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="deepDiveBody">
+                                <tr>
+                                    <td colspan="7" class="empty-msg">Search an item to begin analysis</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="deepDiveEmpty" class="empty-state">
+                <div class="empty-state-icon">🔍</div>
+                <p class="empty-state-text">Search for an item code above to see a comprehensive breakdown of its
+                    purchase history across all customers</p>
+            </div>
+        </div>
+
+        <!-- ====== SMART REORDER TAB ====== -->
+        <div id="tab-reorder" class="tab-content">
+            <div class="section-header">
+                <div class="section-icon reorder-icon">🛒</div>
+                <div>
+                    <h2 class="section-title">Purchasing Action Plan</h2>
+                    <p class="section-subtitle">Clear, actionable order recommendations grouped by supplier based on your sales and current stock.</p>
+                </div>
+                <span class="section-badge success" id="reorderTotalCostBadge">Total: 0.00</span>
+            </div>
+
+            <!-- Action Plan KPIs -->
+            <div class="reorder-kpi-strip" id="actionPlanKpis" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                <div class="reorder-kpi-card rk-urgent" style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--primary); display: flex; align-items: center; gap: 16px;">
+                    <div class="rk-icon" style="font-size: 24px;">🏭</div>
+                    <div class="rk-info">
+                        <div class="rk-value" id="planSuppliers" style="font-size: 24px; font-weight: 700;">0</div>
+                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Suppliers to Contact</div>
+                    </div>
+                </div>
+                <div class="reorder-kpi-card rk-total" style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--accent-primary); display: flex; align-items: center; gap: 16px;">
+                    <div class="rk-icon" style="font-size: 24px;">📦</div>
+                    <div class="rk-info">
+                        <div class="rk-value" id="planItems" style="font-size: 24px; font-weight: 700;">0</div>
+                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Total Items to Order</div>
+                    </div>
+                </div>
+                <div class="reorder-kpi-card rk-cost" style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--info); display: flex; align-items: center; gap: 16px;">
+                    <div class="rk-icon" style="font-size: 24px;">💰</div>
+                    <div class="rk-info">
+                        <div class="rk-value" id="planEstCost" style="font-size: 24px; font-weight: 700;">0.00</div>
+                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Estimated Total Cost</div>
+                    </div>
+                </div>
+                </div>
+            </div>
+
+            <!-- Filter Bar -->
+            <div class="filter-bar">
+                <div class="filter-group" style="flex: 1;">
+                    <label class="filter-label">Search Supplier or Item</label>
+                    <input type="text" class="filter-input" id="planSearch" placeholder="Type supplier name or item code..." autocomplete="off" oninput="renderReorder()">
+                </div>
+            </div>
+
+            <!-- Action Plan Container -->
+            <div id="supplierActionPlans">
+                <div class="empty-state">
+                    <div class="empty-state-icon">🛒</div>
+                    <p class="empty-state-text">Loading purchasing data...</p>
+                </div>
+            </div>
+            
+            <!-- Simplified Table -->
+            <div class="section-header" style="margin-top: 32px;">
+                <div class="section-icon info">📋</div>
+                <div>
+                    <h2 class="section-title">All Required Items</h2>
+                    <p class="section-subtitle">A simple list of every item that needs to be restocked.</p>
+                </div>
+            </div>
+            <div class="table-container">
+                <div class="table-scroll">
+                    <table class="data-table" id="simpleOrderTable">
+                        <thead>
+                            <tr>
+                                <th>Supplier</th>
+                                <th>Item Code</th>
+                                <th>Item Name</th>
+                                <th class="text-right">Current Stock (PCS)</th>
+                                <th class="text-right">Order Qty (PCS)</th>
+                                <th class="text-right">Est. Price/PC</th>
+                                <th class="text-right">Total Est. Cost</th>
+                            </tr>
+                        </thead>
+                        <tbody id="simpleOrderBody">
+                            <tr><td colspan="7" class="empty-msg">Waiting for data...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Configuration: Paste your Google Apps Script URLs here -->
+    <script>
+        // ===== EACH SHEET IS IN A DIFFERENT GOOGLE SPREADSHEET =====
+        // Deploy the same Code.gs in EACH spreadsheet as a web app.
+        // Execute as: "Me", Access: "Anyone"
+
+        // 1. Item Analysis spreadsheet (already deployed)
+        const ITEM_ANALYSIS_URL = "https://script.google.com/macros/s/AKfycbynwCn7bVcrEcnEAzP7-DzDKeEGHcf2h6k5289R1_tnBQiOGgSpbhKZ_cosNeulD5d4ow/exec";
+
+        // 2. Data1 spreadsheet (purchases & supplier pricing)
+        // PASTE YOUR DATA1 DEPLOYED WEB APP URL HERE:
+        const DATA1_URL = "https://script.google.com/macros/s/AKfycbyLjgCVtPoJtz7DEoboXQGReNmSou8G8ABqhZR43GY5Ircn92QypBrLUQ6OlyRR4w/exec";
+
+        // 3. Reorder_Level spreadsheet (stock reorder levels)
+        // PASTE YOUR REORDER_LEVEL DEPLOYED WEB APP URL HERE:
+        const REORDER_LEVEL_URL = "https://script.google.com/macros/s/AKfycbwH-F1YPbQf9dX1PcIZ-3G51r6y4cGpQps3opqPGVbvK7711YMUVWk1myVjFWN0jtjQsQ/exec";
+    </script>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
