@@ -73,6 +73,7 @@ const COLORS = {
 document.addEventListener('DOMContentLoaded', () => {
     initTheme();
     initNavigation();
+    initSalesSubNav();
     initEventListeners();
     fetchData();
 });
@@ -197,6 +198,18 @@ function initEventListeners() {
     if (reorderSupplier) reorderSupplier.addEventListener('change', renderReorderTable);
     if (reorderUrgency) reorderUrgency.addEventListener('change', renderReorderTable);
     if (reorderView) reorderView.addEventListener('change', renderReorderTable);
+
+    // Sales Intel filters
+    const priceSearch = document.getElementById('priceSearchItem');
+    const priceSort = document.getElementById('priceSortBy');
+    const salesCustSelect = document.getElementById('salesCustSelect');
+    if (priceSearch) priceSearch.addEventListener('input', debounce(renderSalesPriceAnalytics, 300));
+    if (priceSort) priceSort.addEventListener('change', renderSalesPriceAnalytics);
+    if (salesCustSelect) salesCustSelect.addEventListener('change', renderSalesCustomerRevenue);
+
+    // Stock Builder search
+    const stockSearch = document.getElementById('stockBuilderSearch');
+    if (stockSearch) stockSearch.addEventListener('input', debounce(renderStockBuilder, 400));
 }
 
 // ===== DATA FETCHING =====
@@ -240,6 +253,8 @@ async function fetchData(forceRefresh = false) {
 
     // Fetch reorder data in parallel (non-blocking)
     fetchReorderData();
+    // Fetch sales data in parallel (non-blocking)
+    fetchSalesData();
 }
 
 function showEmptyState(msg) {
@@ -492,7 +507,7 @@ function populateSelect(id, options, defaultValue, defaultLabel) {
 
 // ===== RENDER ROUTER =====
 function renderCurrentTab() {
-    if (rawData.length === 0) return;
+    if (rawData.length === 0 && currentTab !== 'salesintel') return;
     switch (currentTab) {
         case 'overview': renderOverview(); break;
         case 'dropped': renderDropped(); break;
@@ -502,6 +517,7 @@ function renderCurrentTab() {
         case 'trends': renderTrends(); break;
         case 'deepdive': /* Wait for user action */ break;
         case 'reorder': renderReorder(); break;
+        case 'salesintel': renderSalesIntel(); break;
     }
 }
 
@@ -1464,6 +1480,7 @@ function processReorderData() {
         let bestPricePC = Infinity;
         let bestPriceCTN = 0;
         let bestUnitQty = 1; // Default multiplier
+        let bestPurchaseDate = '';
         const supplierPrices = {}; // supplier -> { prices, priceCTNs, dates, unitQtys }
 
         suppliers.forEach(s => {
@@ -1480,11 +1497,13 @@ function processReorderData() {
             if (data.prices.length > 0) {
                 // Use the most recent price (last entry)
                 const latestPrice = data.prices[data.prices.length - 1];
+                const latestDate = data.dates[data.dates.length - 1];
                 if (latestPrice < bestPricePC) {
                     bestPricePC = latestPrice;
                     bestSupplier = supplier;
                     bestPriceCTN = data.priceCTNs.length > 0 ? data.priceCTNs[data.priceCTNs.length - 1] : 0;
                     bestUnitQty = data.unitQtys.length > 0 ? data.unitQtys[data.unitQtys.length - 1] : 1;
+                    bestPurchaseDate = latestDate;
                 }
             }
         });
@@ -1546,6 +1565,7 @@ function processReorderData() {
             bestSupplier: bestSupplier || 'Unknown',
             bestPricePC: bestPricePC === Infinity ? 0 : bestPricePC,
             bestPriceCTN,
+            lastPurchaseDate: bestPurchaseDate,
             allSuppliers: Object.keys(supplierPrices),
             avgMonthlySales,
             lastMonthSales,
@@ -1619,14 +1639,46 @@ function processReorderData() {
     };
 }
 
+let currentReorderView = 'cards';
+function setReorderView(mode) {
+    currentReorderView = mode;
+    if (mode === 'cards') {
+        document.getElementById('reorderCardsView').style.display = 'block';
+        document.getElementById('reorderListView').style.display = 'none';
+        document.getElementById('btnViewCards').style.background = 'var(--accent-glow)';
+        document.getElementById('btnViewCards').style.color = 'var(--accent-primary)';
+        document.getElementById('btnViewList').style.background = 'transparent';
+        document.getElementById('btnViewList').style.color = 'var(--text-secondary)';
+    } else {
+        document.getElementById('reorderCardsView').style.display = 'none';
+        document.getElementById('reorderListView').style.display = 'block';
+        document.getElementById('btnViewCards').style.background = 'transparent';
+        document.getElementById('btnViewCards').style.color = 'var(--text-secondary)';
+        document.getElementById('btnViewList').style.background = 'var(--accent-glow)';
+        document.getElementById('btnViewList').style.color = 'var(--accent-primary)';
+    }
+}
+
+function toggleSupplierCard(id) {
+    const body = document.getElementById('body-' + id);
+    const icon = document.getElementById('icon-' + id);
+    if (body.style.display === 'none') {
+        body.style.display = 'block';
+        icon.style.transform = 'rotate(-180deg)';
+    } else {
+        body.style.display = 'none';
+        icon.style.transform = 'rotate(0deg)';
+    }
+}
+
 function renderReorder() {
     if (!reorderProcessed || reorderProcessed.enrichedItems.length === 0) {
         if (reorderData.length === 0) {
             document.getElementById('supplierActionPlans').innerHTML = '<div class="empty-state"><p class="empty-state-text">Loading reorder data... Please wait.</p></div>';
-            document.getElementById('simpleOrderBody').innerHTML = '<tr><td colspan="7" class="empty-msg">Loading reorder data... Please wait.</td></tr>';
+            document.getElementById('simpleOrderBody').innerHTML = '<tr><td colspan="8" class="empty-msg">Loading reorder data... Please wait.</td></tr>';
         } else {
             document.getElementById('supplierActionPlans').innerHTML = '<div class="empty-state"><p class="empty-state-text">Everything is fully stocked! No items need to be ordered.</p></div>';
-            document.getElementById('simpleOrderBody').innerHTML = '<tr><td colspan="7" class="empty-msg">No items need to be ordered.</td></tr>';
+            document.getElementById('simpleOrderBody').innerHTML = '<tr><td colspan="8" class="empty-msg">No items need to be ordered.</td></tr>';
         }
         return;
     }
@@ -1702,10 +1754,13 @@ function renderSupplierActionCards(actionPlan) {
             <tr style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 16px 0;">
                     <div style="font-weight: 600; color: var(--text-primary); font-size: 15px; margin-bottom: 4px;">${escapeHtml(item.itemName || item.itemCode)}</div>
-                    <div style="font-size: 13px; color: var(--text-muted);">
+                    <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 4px;">
                         <span style="display:inline-block; margin-right: 12px;"><strong>Code:</strong> ${escapeHtml(item.itemCode)}</span>
                         <span style="display:inline-block; margin-right: 12px; color: ${item.currentStock === 0 ? 'var(--danger)' : 'var(--text-secondary)'}"><strong>Current Stock:</strong> ${formatNumber(item.currentStock)} PCS</span>
                         <span style="display:inline-block;"><strong>Usually Sell:</strong> ${item.avgMonthlySales} PCS / mo</span>
+                    </div>
+                    <div style="font-size: 12px; color: var(--text-secondary);">
+                        <span style="display:inline-block;">🗓️ <strong>Last Bought:</strong> ${item.lastPurchaseDate ? escapeHtml(item.lastPurchaseDate) : 'Unknown'}</span>
                     </div>
                 </td>
                 <td style="padding: 16px 0; text-align: right; vertical-align: middle; width: 140px;">
@@ -1722,23 +1777,31 @@ function renderSupplierActionCards(actionPlan) {
             </tr>
         `).join('');
 
+        const safeId = 'supplier-' + supplier.replace(/[^a-zA-Z0-9]/g, '-');
         return `
-        <div class="supplier-action-card" style="background: var(--surface); border-radius: 12px; margin-bottom: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); overflow: hidden; border: 1px solid var(--border);">
-            <div style="background: var(--surface-light); padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border);">
-               <div>
-                   <h3 style="margin: 0; font-size: 18px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
-                     <span>🏭</span> ${escapeHtml(supplier)}
-                   </h3>
-                   <span style="font-size: 13px; color: var(--text-muted); margin-top: 4px; display: block;">
-                     Need to order ${data.items.length} items (${formatNumber(data.totalCartons)} total pcs)
-                   </span>
+        <div class="supplier-action-card" style="background: var(--bg-card); border-radius: var(--radius-lg); margin-bottom: 20px; box-shadow: var(--shadow-sm); overflow: hidden; border: 1px solid var(--border-color); transition: var(--transition);">
+            <div class="supplier-card-header" onclick="toggleSupplierCard('${safeId}')" style="background: linear-gradient(135deg, var(--bg-card), var(--bg-card-hover)); padding: 20px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); cursor: pointer; transition: var(--transition);">
+               <div style="display: flex; align-items: center; gap: 16px;">
+                   <div style="font-size: 24px; background: var(--info-bg); width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-md); box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);">🏭</div>
+                   <div>
+                       <h3 style="margin: 0; font-size: 18px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+                         ${escapeHtml(supplier)}
+                       </h3>
+                       <span style="font-size: 13px; color: var(--text-muted); margin-top: 6px; display: flex; align-items: center; gap: 8px;">
+                         <span style="background: var(--accent-glow); color: var(--accent-primary); padding: 4px 10px; border-radius: 20px; font-weight: 700;">${data.items.length} items</span>
+                         <span>(${formatNumber(data.totalCartons)} total pcs)</span>
+                       </span>
+                   </div>
                </div>
-               <div style="text-align: right;">
-                   <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Estimated Subtotal</div>
-                   <div style="font-size: 20px; font-weight: 700; color: var(--success); margin-top: 2px;">${formatMoney(data.totalCost)}</div>
+               <div style="text-align: right; display: flex; align-items: center; gap: 24px;">
+                   <div>
+                       <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Estimated Subtotal</div>
+                       <div style="font-size: 20px; font-weight: 700; color: var(--success); margin-top: 2px;">${formatMoney(data.totalCost)}</div>
+                   </div>
+                   <div id="icon-${safeId}" style="transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); font-size: 20px; color: var(--text-muted); width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: var(--bg-secondary); border-radius: 50%;">▼</div>
                </div>
             </div>
-            <div style="padding: 0 24px;">
+            <div id="body-${safeId}" style="padding: 0 24px; display: none; background: var(--bg-secondary);">
                 <table style="width: 100%; border-collapse: collapse;">
                     <tbody>
                         ${itemRows}
@@ -1761,7 +1824,7 @@ function renderSimpleTable(actionPlan) {
     });
     
     if (allItems.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">No items to order.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">No items to order.</td></tr>';
         return;
     }
     
@@ -1770,10 +1833,1181 @@ function renderSimpleTable(actionPlan) {
             <td style="font-weight:500;">${escapeHtml(item.supplier)}</td>
             <td style="color:var(--text-secondary);">${escapeHtml(item.itemCode)}</td>
             <td>${escapeHtml(item.itemName || item.itemCode)}</td>
+            <td style="font-size: 12px; color: var(--text-muted);">${item.lastPurchaseDate ? escapeHtml(item.lastPurchaseDate) : 'Unknown'}</td>
             <td class="text-center" style="color:${item.currentStock === 0 ? 'var(--danger)' : 'var(--text-primary)'}; font-weight: 600;">${formatNumber(item.currentStock)}</td>
             <td class="text-right" style="color:var(--primary); font-weight: 700;">${formatNumber(item.recommendedQty)}</td>
             <td class="text-right" style="color:var(--text-muted);">${formatMoney(item.bestPricePC)}</td>
             <td class="text-right" style="font-weight:600;">${formatMoney(item.estCost)}</td>
         </tr>
     `).join('');
+}
+
+// =========================================================
+// SALES INTELLIGENCE MODULE (Data2)
+// =========================================================
+
+let salesRawData = [];
+let salesProcessed = null;
+let currentSalesSubTab = 'revenue';
+let salesDataFetched = false;
+
+// ===== SALES SUB-TAB NAVIGATION =====
+function initSalesSubNav() {
+    document.querySelectorAll('.sales-sub-tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+            const subtab = e.currentTarget.getAttribute('data-subtab');
+            switchSalesSubTab(subtab);
+        });
+    });
+}
+
+function switchSalesSubTab(subtab) {
+    if (subtab === currentSalesSubTab) return;
+    currentSalesSubTab = subtab;
+
+    document.querySelectorAll('.sales-sub-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector(`.sales-sub-tab[data-subtab="${subtab}"]`)?.classList.add('active');
+
+    document.querySelectorAll('.sales-sub-content').forEach(c => c.classList.remove('active-sub'));
+    const target = document.getElementById(`sales-sub-${subtab}`);
+    if (target) {
+        target.classList.add('active-sub');
+        target.style.animation = 'none';
+        target.offsetHeight;
+        target.style.animation = '';
+    }
+
+    renderSalesCurrentSub();
+}
+
+// ===== FETCH SALES DATA =====
+async function fetchSalesData() {
+    const url = typeof DATA2_URL !== 'undefined' ? DATA2_URL.trim() : '';
+    if (!url || url.includes('PASTE_YOUR')) {
+        console.warn('Sales Intel: DATA2_URL not configured in index.html');
+        return;
+    }
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Network error: ' + response.status);
+        const result = await response.json();
+        if (result.status === 'error') throw new Error(result.message);
+
+        salesRawData = result.data || [];
+        if (salesRawData.length === 0) return;
+
+        salesDataFetched = true;
+        processSalesData();
+
+        // Populate customer dropdown for Customer Analysis
+        if (salesProcessed) {
+            populateSelect('salesCustSelect', salesProcessed.uniqueCustomers, 'ALL', 'All Customers');
+        }
+
+        if (currentTab === 'salesintel') {
+            renderSalesIntel();
+        }
+    } catch (err) {
+        console.error('Error fetching sales data:', err);
+    }
+}
+
+// ===== PROCESS SALES DATA =====
+function processSalesData() {
+    if (salesRawData.length === 0) return;
+
+    const headers = Object.keys(salesRawData[0]);
+
+    // Dynamically identify keys based on headers
+    const itemCodeKey = headers.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) || headers[1];
+    const unitPriceKey = headers.find(h => h.toLowerCase().includes('unit_price')) || headers[2];
+    const itemDesKey = headers.find(h => h.toLowerCase().includes('item_des')) || headers[3];
+    const packingKey = headers.find(h => h.toLowerCase().includes('packing')) || headers[4];
+    const totalUnitsKey = headers.find(h => h.toLowerCase().includes('total_units')) || headers[5];
+    const netAmtKey = headers.find(h => h.toLowerCase().includes('net_amt')) || headers[6];
+    const custNameKey = headers.find(h => h.toLowerCase().includes('cust_name')) || headers[7];
+    const yearKey = headers.find(h => h.toLowerCase().includes('year') && h.toLowerCase().includes('copy')) || headers.find(h => h.toLowerCase().includes('year') && !h.toLowerCase().includes('year.1') && !h.toUpperCase().startsWith('YEAR.')) || headers[8];
+    const monthKey = headers.find(h => h.toUpperCase() === 'MONTH') || headers[11];
+    const entryNoKey = headers.find(h => h.toLowerCase().includes('entry_no')) || headers[0];
+
+    // Normalize
+    let normalized = salesRawData.map(row => {
+        const unitPrice = parseFloat((row[unitPriceKey] || '0').toString().replace(/,/g, '')) || 0;
+        const totalUnits = parseFloat((row[totalUnitsKey] || '0').toString().replace(/,/g, '')) || 0;
+        // Calculate revenue from unit_price * total_units (ignore net_amt column)
+        const netAmt = unitPrice * totalUnits;
+        const year = parseInt((row[yearKey] || '0').toString()) || 0;
+        const month = parseInt((row[monthKey] || '0').toString()) || 0;
+
+        return {
+            entryNo: (row[entryNoKey] || '').toString().trim(),
+            itemCode: (row[itemCodeKey] || '').toString().trim(),
+            unitPrice,
+            itemDes: (row[itemDesKey] || '').toString().trim(),
+            packing: (row[packingKey] || '').toString().trim(),
+            totalUnits,
+            netAmt,
+            customer: (row[custNameKey] || '').toString().trim(),
+            year,
+            month,
+            yearMonth: year && month ? `${year}-${month}` : ''
+        };
+    }).filter(r => r.itemCode && r.customer && r.year > 0);
+
+    // Aggregate totals
+    const totalRevenue = normalized.reduce((s, r) => s + r.netAmt, 0);
+    const totalUnits = normalized.reduce((s, r) => s + r.totalUnits, 0);
+    const uniqueItems = [...new Set(normalized.map(r => r.itemCode))].sort();
+    const uniqueCustomers = [...new Set(normalized.map(r => r.customer))].sort();
+    const totalTransactions = new Set(normalized.map(r => r.entryNo)).size;
+    const avgTxnValue = totalTransactions > 0 ? totalRevenue / totalTransactions : 0;
+    const weightedAvgPrice = totalUnits > 0 ? totalRevenue / totalUnits : 0;
+
+    // All year-months sorted
+    const allYearMonths = [...new Set(normalized.map(r => r.yearMonth))].filter(Boolean);
+    allYearMonths.sort((a, b) => monthSortKey(a) - monthSortKey(b));
+
+    // Monthly aggregates
+    const monthlyRevenue = {};
+    const monthlyUnits = {};
+    const monthlyCount = {};
+    allYearMonths.forEach(ym => { monthlyRevenue[ym] = 0; monthlyUnits[ym] = 0; monthlyCount[ym] = 0; });
+    normalized.forEach(r => {
+        if (!r.yearMonth) return;
+        monthlyRevenue[r.yearMonth] = (monthlyRevenue[r.yearMonth] || 0) + r.netAmt;
+        monthlyUnits[r.yearMonth] = (monthlyUnits[r.yearMonth] || 0) + r.totalUnits;
+        monthlyCount[r.yearMonth] = (monthlyCount[r.yearMonth] || 0) + 1;
+    });
+
+    // Revenue by customer
+    const customerRevenue = {};
+    normalized.forEach(r => {
+        if (!customerRevenue[r.customer]) customerRevenue[r.customer] = { revenue: 0, units: 0, entries: new Set(), months: {} };
+        customerRevenue[r.customer].revenue += r.netAmt;
+        customerRevenue[r.customer].units += r.totalUnits;
+        customerRevenue[r.customer].entries.add(r.entryNo);
+        if (!customerRevenue[r.customer].months[r.yearMonth]) customerRevenue[r.customer].months[r.yearMonth] = { revenue: 0, units: 0 };
+        customerRevenue[r.customer].months[r.yearMonth].revenue += r.netAmt;
+        customerRevenue[r.customer].months[r.yearMonth].units += r.totalUnits;
+    });
+
+    // Revenue by item
+    const itemRevenue = {};
+    normalized.forEach(r => {
+        if (!itemRevenue[r.itemCode]) itemRevenue[r.itemCode] = { revenue: 0, units: 0, description: r.itemDes, prices: [], months: {} };
+        itemRevenue[r.itemCode].revenue += r.netAmt;
+        itemRevenue[r.itemCode].units += r.totalUnits;
+        if (r.unitPrice > 0) itemRevenue[r.itemCode].prices.push(r.unitPrice);
+        if (!itemRevenue[r.itemCode].months[r.yearMonth]) itemRevenue[r.itemCode].months[r.yearMonth] = { revenue: 0, units: 0, avgPrice: 0, prices: [] };
+        itemRevenue[r.itemCode].months[r.yearMonth].revenue += r.netAmt;
+        itemRevenue[r.itemCode].months[r.yearMonth].units += r.totalUnits;
+        if (r.unitPrice > 0) itemRevenue[r.itemCode].months[r.yearMonth].prices.push(r.unitPrice);
+    });
+
+    // All years
+    const allYears = [...new Set(normalized.map(r => r.year))].filter(y => y > 0).sort();
+
+    // Yearly revenue
+    const yearlyRevenue = {};
+    normalized.forEach(r => {
+        yearlyRevenue[r.year] = (yearlyRevenue[r.year] || 0) + r.netAmt;
+    });
+
+    salesProcessed = {
+        normalized,
+        totalRevenue,
+        totalUnits,
+        uniqueItems,
+        uniqueCustomers,
+        totalTransactions,
+        avgTxnValue,
+        weightedAvgPrice,
+        allYearMonths,
+        monthlyRevenue,
+        monthlyUnits,
+        monthlyCount,
+        customerRevenue,
+        itemRevenue,
+        allYears,
+        yearlyRevenue
+    };
+}
+
+// ===== RENDER ROUTER =====
+function renderSalesIntel() {
+    if (!salesProcessed) {
+        if (!salesDataFetched) {
+            fetchSalesData();
+        }
+        return;
+    }
+
+    // Update hero stats
+    setText('salesHeroRevenue', formatSalesMoney(salesProcessed.totalRevenue));
+    setText('salesHeroUnits', formatNumber(salesProcessed.totalUnits));
+    setText('salesHeroItems', formatNumber(salesProcessed.uniqueItems.length));
+    setText('salesHeroCustomers', formatNumber(salesProcessed.uniqueCustomers.length));
+
+    renderSalesCurrentSub();
+}
+
+function renderSalesCurrentSub() {
+    if (!salesProcessed) return;
+    switch (currentSalesSubTab) {
+        case 'revenue': renderSalesRevenueOverview(); break;
+        case 'topgen': renderSalesTopGenerators(); break;
+        case 'priceanalytics': renderSalesPriceAnalytics(); break;
+        case 'custrevenue': renderSalesCustomerRevenue(); break;
+        case 'periodcomp': renderSalesPeriodComparison(); break;
+        case 'stockbuilder': renderStockBuilder(); break;
+    }
+}
+
+function formatSalesMoney(val) {
+    if (typeof val !== 'number' || isNaN(val)) return '0.00';
+    if (Math.abs(val) >= 1000000) return (val / 1000000).toFixed(2) + 'M';
+    if (Math.abs(val) >= 1000) return val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return val.toFixed(2);
+}
+
+// ===== 1. REVENUE OVERVIEW =====
+function renderSalesRevenueOverview() {
+    const { totalRevenue, totalUnits, weightedAvgPrice, totalTransactions, avgTxnValue, allYearMonths, monthlyRevenue, monthlyUnits, customerRevenue } = salesProcessed;
+
+    // KPIs
+    setText('kpiTotalRevenue', formatSalesMoney(totalRevenue));
+    setText('kpiAvgPrice', formatSalesMoney(weightedAvgPrice));
+    setText('kpiTransactions', formatNumber(totalTransactions));
+    setText('kpiAvgTxn', formatSalesMoney(avgTxnValue));
+
+    const mutedColor = getComputedStyle(document.body).getPropertyValue('--text-muted').trim();
+
+    // Monthly Revenue Trend
+    renderChart('chartSalesRevenueTrend', {
+        type: 'line',
+        data: {
+            labels: allYearMonths.map(m => formatMonthLabel(m)),
+            datasets: [{
+                label: 'Revenue',
+                data: allYearMonths.map(m => monthlyRevenue[m] || 0),
+                borderColor: '#f59e0b',
+                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                fill: true,
+                tension: 0.4,
+                pointBackgroundColor: '#f59e0b',
+                pointBorderColor: '#fff',
+                pointBorderWidth: 2,
+                pointRadius: 4,
+                pointHoverRadius: 7
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => `Revenue: ${formatSalesMoney(ctx.parsed.y)}` } }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) }, beginAtZero: true }
+            },
+            interaction: { intersect: false, mode: 'index' }
+        }
+    });
+
+    // Revenue by Top 10 Customers
+    const sortedCusts = Object.entries(customerRevenue).sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 10);
+    renderChart('chartSalesRevenueByCustomer', {
+        type: 'doughnut',
+        data: {
+            labels: sortedCusts.map(c => truncate(c[0], 20)),
+            datasets: [{
+                data: sortedCusts.map(c => c[1].revenue),
+                backgroundColor: COLORS.palette.slice(0, 10).map(c => c + 'CC'),
+                borderColor: COLORS.palette.slice(0, 10),
+                borderWidth: 2,
+                hoverOffset: 8
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { color: mutedColor, padding: 10, font: { size: 11, family: 'Outfit' }, usePointStyle: true, pointStyleWidth: 10 } },
+                tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => ` ${ctx.label}: ${formatSalesMoney(ctx.parsed)}` } }
+            },
+            cutout: '65%'
+        }
+    });
+
+    // Monthly Units Sold
+    renderChart('chartSalesUnitsTrend', {
+        type: 'bar',
+        data: {
+            labels: allYearMonths.map(m => formatMonthLabel(m)),
+            datasets: [{
+                label: 'Units Sold',
+                data: allYearMonths.map(m => monthlyUnits[m] || 0),
+                backgroundColor: allYearMonths.map((_, i) => COLORS.palette[i % COLORS.palette.length] + '70'),
+                borderColor: allYearMonths.map((_, i) => COLORS.palette[i % COLORS.palette.length]),
+                borderWidth: 1.5,
+                borderRadius: 6,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => `Units: ${formatNumber(ctx.parsed.y)}` } } },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatNumber(v) } }
+            }
+        }
+    });
+
+    // Avg Price Trend
+    const avgPriceByMonth = allYearMonths.map(m => {
+        const rev = monthlyRevenue[m] || 0;
+        const units = monthlyUnits[m] || 0;
+        return units > 0 ? rev / units : 0;
+    });
+    renderChart('chartSalesAvgPriceTrend', {
+        type: 'line',
+        data: {
+            labels: allYearMonths.map(m => formatMonthLabel(m)),
+            datasets: [{
+                label: 'Avg Price',
+                data: avgPriceByMonth,
+                borderColor: '#10b981',
+                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                fill: true,
+                tension: 0.4,
+                pointBackgroundColor: '#10b981',
+                pointBorderColor: '#fff',
+                pointBorderWidth: 2,
+                pointRadius: 4,
+                pointHoverRadius: 7
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => `Avg Price: ${formatSalesMoney(ctx.parsed.y)}` } } },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) } }
+            },
+            interaction: { intersect: false, mode: 'index' }
+        }
+    });
+}
+
+// ===== 2. TOP GENERATORS =====
+function renderSalesTopGenerators() {
+    const { itemRevenue, totalRevenue, customerRevenue } = salesProcessed;
+    const mutedColor = getComputedStyle(document.body).getPropertyValue('--text-muted').trim();
+
+    // Sort items by revenue
+    const sortedItems = Object.entries(itemRevenue).sort((a, b) => b[1].revenue - a[1].revenue);
+
+    // Pareto analysis
+    const totalItemCount = sortedItems.length;
+    const top20Count = Math.ceil(totalItemCount * 0.2);
+    const top20Revenue = sortedItems.slice(0, top20Count).reduce((s, [, d]) => s + d.revenue, 0);
+    const top20Pct = totalRevenue > 0 ? ((top20Revenue / totalRevenue) * 100).toFixed(1) : 0;
+    const top5Revenue = sortedItems.slice(0, 5).reduce((s, [, d]) => s + d.revenue, 0);
+    const bottom50Count = Math.ceil(totalItemCount * 0.5);
+    const bottom50Revenue = sortedItems.slice(-bottom50Count).reduce((s, [, d]) => s + d.revenue, 0);
+    const bottom50Pct = totalRevenue > 0 ? ((bottom50Revenue / totalRevenue) * 100).toFixed(1) : 0;
+
+    setText('paretoInsightText', `Top ${top20Count} items (20%) generate ${top20Pct}% of total revenue — classic Pareto distribution`);
+    setText('paretoTop20Pct', `${top20Pct}%`);
+    setText('paretoTop5Revenue', formatSalesMoney(top5Revenue));
+    setText('paretoBottom50', `${bottom50Pct}%`);
+
+    // Top 15 Items by Revenue (Horizontal Bar)
+    const top15Items = sortedItems.slice(0, 15);
+    renderChart('chartTopItemsRevenue', {
+        type: 'bar',
+        data: {
+            labels: top15Items.map(([code, d]) => truncate(d.description || code, 25)),
+            datasets: [{
+                label: 'Revenue',
+                data: top15Items.map(([, d]) => d.revenue),
+                backgroundColor: COLORS.palette.map(c => c + '70'),
+                borderColor: COLORS.palette,
+                borderWidth: 1.5,
+                borderRadius: 6,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            indexAxis: 'y',
+            plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => `Revenue: ${formatSalesMoney(ctx.parsed.x)}` } } },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) } },
+                y: { grid: { display: false }, ticks: { color: mutedColor, font: { size: 11 } } }
+            }
+        }
+    });
+
+    // Top 15 Customers by Revenue
+    const sortedCustomers = Object.entries(customerRevenue).sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 15);
+    renderChart('chartTopCustomersRevenue', {
+        type: 'bar',
+        data: {
+            labels: sortedCustomers.map(([name]) => truncate(name, 25)),
+            datasets: [{
+                label: 'Revenue',
+                data: sortedCustomers.map(([, d]) => d.revenue),
+                backgroundColor: COLORS.palette.map(c => c + '70'),
+                borderColor: COLORS.palette,
+                borderWidth: 1.5,
+                borderRadius: 6,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            indexAxis: 'y',
+            plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => `Revenue: ${formatSalesMoney(ctx.parsed.x)}` } } },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) } },
+                y: { grid: { display: false }, ticks: { color: mutedColor, font: { size: 11 } } }
+            }
+        }
+    });
+
+    // Top Generators Table
+    const tbody = document.getElementById('topGenBody');
+    let cumRevenue = 0;
+    tbody.innerHTML = sortedItems.slice(0, 100).map(([code, data], i) => {
+        cumRevenue += data.revenue;
+        const share = totalRevenue > 0 ? ((data.revenue / totalRevenue) * 100) : 0;
+        const cumPct = totalRevenue > 0 ? ((cumRevenue / totalRevenue) * 100) : 0;
+        const avgPrice = data.units > 0 ? data.revenue / data.units : 0;
+
+        return `<tr style="--row-index: ${i}">
+            <td class="text-center">${i + 1}</td>
+            <td class="item-name">${escapeHtml(code)}</td>
+            <td style="color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(truncate(data.description || '—', 30))}</td>
+            <td class="text-right" style="font-weight:700;color:var(--warning)">${formatSalesMoney(data.revenue)}</td>
+            <td class="text-right">${formatNumber(data.units)}</td>
+            <td class="text-right" style="color:var(--success)">${formatSalesMoney(avgPrice)}</td>
+            <td class="text-right">
+                <div class="rev-share-bar">
+                    <div class="rev-share-bar-bg"><div class="rev-share-bar-fill" style="width:${Math.min(share * 2, 100)}%"></div></div>
+                    <span class="rev-share-pct">${share.toFixed(1)}%</span>
+                </div>
+            </td>
+            <td>
+                <div class="rev-share-bar">
+                    <div class="rev-share-bar-bg"><div class="rev-share-bar-fill cumulative" style="width:${Math.min(cumPct, 100)}%"></div></div>
+                    <span class="rev-share-pct">${cumPct.toFixed(1)}%</span>
+                </div>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+// ===== 3. PRICE ANALYTICS =====
+function renderSalesPriceAnalytics() {
+    const { itemRevenue } = salesProcessed;
+    const searchVal = (document.getElementById('priceSearchItem')?.value || '').toLowerCase();
+    const sortBy = document.getElementById('priceSortBy')?.value || 'variation_desc';
+    const mutedColor = getComputedStyle(document.body).getPropertyValue('--text-muted').trim();
+
+    // Build price analytics data
+    let priceData = Object.entries(itemRevenue).map(([code, data]) => {
+        const prices = data.prices.filter(p => p > 0);
+        if (prices.length === 0) return null;
+        const minPrice = Math.min(...prices);
+        const maxPrice = Math.max(...prices);
+        const avgPrice = prices.reduce((s, p) => s + p, 0) / prices.length;
+        const variation = avgPrice > 0 ? ((maxPrice - minPrice) / avgPrice) * 100 : 0;
+
+        return {
+            code,
+            description: data.description || '—',
+            minPrice,
+            maxPrice,
+            avgPrice,
+            variation,
+            units: data.units,
+            revenue: data.revenue
+        };
+    }).filter(d => d !== null);
+
+    // Filter
+    if (searchVal) {
+        priceData = priceData.filter(d => d.code.toLowerCase().includes(searchVal) || d.description.toLowerCase().includes(searchVal));
+    }
+
+    // Sort
+    switch (sortBy) {
+        case 'variation_desc': priceData.sort((a, b) => b.variation - a.variation); break;
+        case 'avgprice_desc': priceData.sort((a, b) => b.avgPrice - a.avgPrice); break;
+        case 'revenue_desc': priceData.sort((a, b) => b.revenue - a.revenue); break;
+    }
+
+    // Price Variation Chart (Top 10)
+    const top10Variation = [...priceData].sort((a, b) => b.variation - a.variation).slice(0, 10);
+    renderChart('chartPriceVariation', {
+        type: 'bar',
+        data: {
+            labels: top10Variation.map(d => truncate(d.description || d.code, 20)),
+            datasets: [
+                {
+                    label: 'Min Price',
+                    data: top10Variation.map(d => d.minPrice),
+                    backgroundColor: 'rgba(16, 185, 129, 0.7)',
+                    borderColor: '#10b981',
+                    borderWidth: 1.5,
+                    borderRadius: 4,
+                    borderSkipped: false
+                },
+                {
+                    label: 'Avg Price',
+                    data: top10Variation.map(d => d.avgPrice),
+                    backgroundColor: 'rgba(59, 130, 246, 0.7)',
+                    borderColor: '#3b82f6',
+                    borderWidth: 1.5,
+                    borderRadius: 4,
+                    borderSkipped: false
+                },
+                {
+                    label: 'Max Price',
+                    data: top10Variation.map(d => d.maxPrice),
+                    backgroundColor: 'rgba(239, 68, 68, 0.7)',
+                    borderColor: '#ef4444',
+                    borderWidth: 1.5,
+                    borderRadius: 4,
+                    borderSkipped: false
+                }
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: mutedColor, font: { size: 11, family: 'Outfit' }, usePointStyle: true } },
+                tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => ` ${ctx.dataset.label}: ${formatSalesMoney(ctx.parsed.y)}` } }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, maxRotation: 45, font: { size: 10 } } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) } }
+            }
+        }
+    });
+
+    // Price vs Volume Scatter
+    const topVolume = [...priceData].sort((a, b) => b.units - a.units).slice(0, 30);
+    renderChart('chartPriceVsVolume', {
+        type: 'bubble',
+        data: {
+            datasets: [{
+                label: 'Items',
+                data: topVolume.map(d => ({ x: d.units, y: d.avgPrice, r: Math.min(Math.max(Math.sqrt(d.revenue / 1000) * 2, 4), 25), label: d.code })),
+                backgroundColor: 'rgba(99, 102, 241, 0.5)',
+                borderColor: '#6366f1',
+                borderWidth: 1.5
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8,
+                    callbacks: {
+                        title: ctx => ctx[0]?.raw?.label || '',
+                        label: ctx => [`Volume: ${formatNumber(ctx.parsed.x)}`, `Avg Price: ${formatSalesMoney(ctx.parsed.y)}`]
+                    }
+                }
+            },
+            scales: {
+                x: { title: { display: true, text: 'Total Units Sold', color: mutedColor, font: { size: 12 } }, grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatNumber(v) } },
+                y: { title: { display: true, text: 'Average Price', color: mutedColor, font: { size: 12 } }, grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) } }
+            }
+        }
+    });
+
+    // Price Table
+    const tbody = document.getElementById('priceAnalyticsBody');
+    if (priceData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-msg">No items match your search</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = priceData.slice(0, 150).map((d, i) => {
+        const varClass = d.variation >= 50 ? 'high' : d.variation >= 20 ? 'medium' : 'low';
+        return `<tr style="--row-index: ${i}">
+            <td class="text-center">${i + 1}</td>
+            <td class="item-name">${escapeHtml(d.code)}</td>
+            <td style="color:var(--text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(truncate(d.description, 30))}</td>
+            <td class="text-right" style="color:var(--success)">${formatSalesMoney(d.minPrice)}</td>
+            <td class="text-right" style="color:var(--danger)">${formatSalesMoney(d.maxPrice)}</td>
+            <td class="text-right" style="font-weight:600">${formatSalesMoney(d.avgPrice)}</td>
+            <td class="text-right"><span class="price-var-badge ${varClass}">${d.variation.toFixed(1)}%</span></td>
+            <td class="text-right">${formatNumber(d.units)}</td>
+            <td class="text-right" style="font-weight:700;color:var(--warning)">${formatSalesMoney(d.revenue)}</td>
+        </tr>`;
+    }).join('');
+}
+
+// ===== 4. CUSTOMER REVENUE ANALYSIS =====
+function renderSalesCustomerRevenue() {
+    const { customerRevenue, allYearMonths, allYears } = salesProcessed;
+    const selectedCust = document.getElementById('salesCustSelect')?.value || 'ALL';
+    const mutedColor = getComputedStyle(document.body).getPropertyValue('--text-muted').trim();
+
+    // Update chart title
+    const chartTitle = document.getElementById('custRevenueChartTitle');
+    if (chartTitle) {
+        chartTitle.textContent = selectedCust === 'ALL' ? 'Overall Revenue Trend' : `Revenue Trend — ${truncate(selectedCust, 30)}`;
+    }
+
+    // Revenue trend chart
+    if (selectedCust === 'ALL') {
+        // Show top 5 customers as separate lines
+        const top5 = Object.entries(customerRevenue).sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 5);
+        renderChart('chartCustRevenueTrend', {
+            type: 'line',
+            data: {
+                labels: allYearMonths.map(m => formatMonthLabel(m)),
+                datasets: top5.map(([name, data], i) => ({
+                    label: truncate(name, 20),
+                    data: allYearMonths.map(m => data.months[m]?.revenue || 0),
+                    borderColor: COLORS.palette[i],
+                    backgroundColor: COLORS.palette[i] + '15',
+                    fill: false,
+                    tension: 0.4,
+                    pointRadius: 3,
+                    pointHoverRadius: 6,
+                    borderWidth: 2
+                }))
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: mutedColor, font: { size: 11, family: 'Outfit' }, usePointStyle: true } },
+                    tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, mode: 'index', callbacks: { label: ctx => ` ${ctx.dataset.label}: ${formatSalesMoney(ctx.parsed.y)}` } }
+                },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor } },
+                    y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) }, beginAtZero: true }
+                },
+                interaction: { intersect: false, mode: 'index' }
+            }
+        });
+    } else {
+        const data = customerRevenue[selectedCust];
+        if (data) {
+            renderChart('chartCustRevenueTrend', {
+                type: 'bar',
+                data: {
+                    labels: allYearMonths.map(m => formatMonthLabel(m)),
+                    datasets: [{
+                        label: 'Revenue',
+                        data: allYearMonths.map(m => data.months[m]?.revenue || 0),
+                        backgroundColor: 'rgba(245, 158, 11, 0.6)',
+                        borderColor: '#f59e0b',
+                        borderWidth: 1.5,
+                        borderRadius: 6,
+                        borderSkipped: false
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => `Revenue: ${formatSalesMoney(ctx.parsed.y)}` } } },
+                    scales: {
+                        x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor } },
+                        y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) }, beginAtZero: true }
+                    }
+                }
+            });
+        }
+    }
+
+    // Customer table
+    const tbody = document.getElementById('custRevenueBody');
+    const sortedCustomers = Object.entries(customerRevenue).sort((a, b) => b[1].revenue - a[1].revenue);
+
+    if (sortedCustomers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">No customer data available</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = sortedCustomers.slice(0, 100).map(([name, data], i) => {
+        const txnCount = data.entries.size;
+        const avgTxn = txnCount > 0 ? data.revenue / txnCount : 0;
+        const avgItemsPerTxn = txnCount > 0 ? data.units / txnCount : 0;
+
+        // Growth: compare last year vs previous year
+        let growth = null;
+        if (allYears.length >= 2) {
+            const lastYear = allYears[allYears.length - 1];
+            const prevYear = allYears[allYears.length - 2];
+            const lastYearRev = Object.entries(data.months)
+                .filter(([m]) => parseMonthStr(m).year === lastYear)
+                .reduce((s, [, d]) => s + d.revenue, 0);
+            const prevYearRev = Object.entries(data.months)
+                .filter(([m]) => parseMonthStr(m).year === prevYear)
+                .reduce((s, [, d]) => s + d.revenue, 0);
+            if (prevYearRev > 0) {
+                growth = ((lastYearRev - prevYearRev) / prevYearRev) * 100;
+            }
+        }
+
+        const growthClass = growth === null ? 'neutral' : growth >= 0 ? 'positive' : 'negative';
+        const growthText = growth === null ? 'N/A' : `${growth >= 0 ? '▲' : '▼'} ${Math.abs(growth).toFixed(1)}%`;
+
+        return `<tr style="--row-index: ${i}">
+            <td class="text-center">${i + 1}</td>
+            <td class="customer-name">${escapeHtml(name)}</td>
+            <td class="text-right" style="font-weight:700;color:var(--warning)">${formatSalesMoney(data.revenue)}</td>
+            <td class="text-right">${formatNumber(data.units)}</td>
+            <td class="text-right">${formatNumber(txnCount)}</td>
+            <td class="text-right" style="color:var(--accent-primary)">${formatSalesMoney(avgTxn)}</td>
+            <td class="text-right">${avgItemsPerTxn.toFixed(1)}</td>
+            <td><span class="growth-indicator ${growthClass}">${growthText}</span></td>
+        </tr>`;
+    }).join('');
+}
+
+// ===== 5. PERIOD COMPARISON =====
+function renderSalesPeriodComparison() {
+    const { allYears, normalized, allYearMonths, monthlyRevenue } = salesProcessed;
+    const mutedColor = getComputedStyle(document.body).getPropertyValue('--text-muted').trim();
+
+    if (allYears.length < 2) {
+        document.getElementById('periodCompBody').innerHTML = '<tr><td colspan="6" class="empty-msg">Need at least 2 years of data for comparison</td></tr>';
+        return;
+    }
+
+    // Use the last 2 years for comparison
+    const year2 = allYears[allYears.length - 1];
+    const year1 = allYears[allYears.length - 2];
+
+    setText('periodYear1Col', year1.toString());
+    setText('periodYear2Col', year2.toString());
+
+    // Build monthly data for each year
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const year1Monthly = {};
+    const year2Monthly = {};
+
+    for (let m = 1; m <= 12; m++) {
+        const key1 = `${year1}-${m}`;
+        const key2 = `${year2}-${m}`;
+        year1Monthly[m] = monthlyRevenue[key1] || 0;
+        year2Monthly[m] = monthlyRevenue[key2] || 0;
+    }
+
+    // YoY Revenue Chart
+    renderChart('chartYoYRevenue', {
+        type: 'bar',
+        data: {
+            labels: monthNames,
+            datasets: [
+                {
+                    label: year1.toString(),
+                    data: monthNames.map((_, i) => year1Monthly[i + 1]),
+                    backgroundColor: 'rgba(99, 102, 241, 0.6)',
+                    borderColor: '#6366f1',
+                    borderWidth: 1.5,
+                    borderRadius: 4,
+                    borderSkipped: false
+                },
+                {
+                    label: year2.toString(),
+                    data: monthNames.map((_, i) => year2Monthly[i + 1]),
+                    backgroundColor: 'rgba(245, 158, 11, 0.6)',
+                    borderColor: '#f59e0b',
+                    borderWidth: 1.5,
+                    borderRadius: 4,
+                    borderSkipped: false
+                }
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: mutedColor, font: { size: 12, family: 'Outfit' }, usePointStyle: true } },
+                tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => ` ${ctx.dataset.label}: ${formatSalesMoney(ctx.parsed.y)}` } }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatSalesMoney(v) } }
+            }
+        }
+    });
+
+    // MoM Growth Rate Chart
+    const growthRates = allYearMonths.map((m, i) => {
+        if (i === 0) return 0;
+        const prev = monthlyRevenue[allYearMonths[i - 1]] || 0;
+        const curr = monthlyRevenue[m] || 0;
+        return prev > 0 ? ((curr - prev) / prev) * 100 : 0;
+    });
+
+    renderChart('chartMoMGrowth', {
+        type: 'bar',
+        data: {
+            labels: allYearMonths.map(m => formatMonthLabel(m)),
+            datasets: [{
+                label: 'Growth %',
+                data: growthRates,
+                backgroundColor: growthRates.map(g => g >= 0 ? 'rgba(16, 185, 129, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
+                borderColor: growthRates.map(g => g >= 0 ? '#10b981' : '#ef4444'),
+                borderWidth: 1.5,
+                borderRadius: 4,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => `Growth: ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(1)}%` } }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, maxRotation: 45, font: { size: 10 } } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => v + '%' } }
+            }
+        }
+    });
+
+    // Period Comparison Table
+    const tbody = document.getElementById('periodCompBody');
+    tbody.innerHTML = monthNames.map((name, i) => {
+        const m = i + 1;
+        const rev1 = year1Monthly[m];
+        const rev2 = year2Monthly[m];
+        const change = rev2 - rev1;
+        const growthPct = rev1 > 0 ? ((change / rev1) * 100) : (rev2 > 0 ? 100 : 0);
+        const trendClass = change > 0 ? 'trend-up' : change < 0 ? 'trend-down' : 'trend-flat';
+        const trendIcon = change > 0 ? '▲' : change < 0 ? '▼' : '—';
+
+        return `<tr style="--row-index: ${i}">
+            <td style="font-weight:600">${name}</td>
+            <td class="text-right">${formatSalesMoney(rev1)}</td>
+            <td class="text-right" style="font-weight:700">${formatSalesMoney(rev2)}</td>
+            <td class="text-right"><span class="${trendClass}" style="font-weight:600">${change >= 0 ? '+' : ''}${formatSalesMoney(change)}</span></td>
+            <td class="text-right"><span class="${trendClass}" style="font-weight:700">${growthPct >= 0 ? '+' : ''}${growthPct.toFixed(1)}%</span></td>
+            <td><span class="trend-arrow ${trendClass}">${trendIcon} ${Math.abs(growthPct) > 50 ? 'Significant' : Math.abs(growthPct) > 20 ? 'Moderate' : 'Stable'}</span></td>
+        </tr>`;
+    }).join('');
+}
+
+// ===== EXPORT DROPPED ITEMS TO EXCEL =====
+function exportDroppedToExcel() {
+    if (!processedData || !processedData.droppedItems) {
+        alert('No data to export');
+        return;
+    }
+
+    const searchVal = (document.getElementById('droppedCustomerSearch')?.value || '').toLowerCase();
+    const minMonths = parseInt(document.getElementById('droppedMonthsFilter')?.value || '2');
+    const sortBy = document.getElementById('droppedSortBy')?.value || 'months_desc';
+
+    // Get the same filtered & sorted data shown in the table
+    let filtered = processedData.droppedItems.filter(d => d.monthsInactive >= minMonths);
+    if (searchVal) filtered = filtered.filter(d => d.customer.toLowerCase().includes(searchVal));
+    switch (sortBy) {
+        case 'months_desc': filtered.sort((a, b) => b.monthsInactive - a.monthsInactive); break;
+        case 'items_desc': filtered.sort((a, b) => b.avgQtyPerMonth - a.avgQtyPerMonth); break;
+        case 'customer_asc': filtered.sort((a, b) => a.customer.localeCompare(b.customer)); break;
+    }
+
+    if (filtered.length === 0) { alert('No dropped items to export'); return; }
+
+    // Group by customer
+    const grouped = {};
+    filtered.forEach(d => {
+        if (!grouped[d.customer]) grouped[d.customer] = [];
+        grouped[d.customer].push(d);
+    });
+
+    // ===== STYLES =====
+    const titleStyle = {
+        font: { bold: true, sz: 16, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '1E293B' } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+        border: { bottom: { style: 'thin', color: { rgb: '475569' } } }
+    };
+    const subtitleStyle = {
+        font: { sz: 11, color: { rgb: 'CBD5E1' } },
+        fill: { fgColor: { rgb: '1E293B' } },
+        alignment: { horizontal: 'center', vertical: 'center' }
+    };
+    const customerHeaderStyle = {
+        font: { bold: true, sz: 13, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '6366F1' } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+        border: { bottom: { style: 'medium', color: { rgb: '4F46E5' } } }
+    };
+    const colHeaderStyle = {
+        font: { bold: true, sz: 10, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '334155' } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+        border: { bottom: { style: 'thin', color: { rgb: '475569' } } }
+    };
+    const dataStyleEven = {
+        font: { sz: 10 },
+        fill: { fgColor: { rgb: 'F8FAFC' } },
+        alignment: { vertical: 'center' },
+        border: { bottom: { style: 'thin', color: { rgb: 'E2E8F0' } } }
+    };
+    const dataStyleOdd = {
+        font: { sz: 10 },
+        fill: { fgColor: { rgb: 'FFFFFF' } },
+        alignment: { vertical: 'center' },
+        border: { bottom: { style: 'thin', color: { rgb: 'E2E8F0' } } }
+    };
+    const statusLost = { font: { bold: true, sz: 10, color: { rgb: 'DC2626' } }, fill: { fgColor: { rgb: 'FEE2E2' } }, alignment: { horizontal: 'center', vertical: 'center' }, border: { bottom: { style: 'thin', color: { rgb: 'E2E8F0' } } } };
+    const statusAtRisk = { font: { bold: true, sz: 10, color: { rgb: 'D97706' } }, fill: { fgColor: { rgb: 'FEF3C7' } }, alignment: { horizontal: 'center', vertical: 'center' }, border: { bottom: { style: 'thin', color: { rgb: 'E2E8F0' } } } };
+    const statusRecent = { font: { bold: true, sz: 10, color: { rgb: 'EA580C' } }, fill: { fgColor: { rgb: 'FFEDD5' } }, alignment: { horizontal: 'center', vertical: 'center' }, border: { bottom: { style: 'thin', color: { rgb: 'E2E8F0' } } } };
+    const numStyle = (base) => ({ ...base, alignment: { ...base.alignment, horizontal: 'right' } });
+
+    const COL_HEADERS = ['#', 'Item Code', 'Last Purchase', 'Last Qty', 'Avg Qty/Month', 'Months Inactive', 'Status'];
+    const colCount = COL_HEADERS.length;
+
+    // Build rows
+    const wsData = [];
+    const merges = [];
+
+    // Row 0: Title
+    const titleRow = [{ v: '📊 Dropped Items Report', s: titleStyle }];
+    for (let c = 1; c < colCount; c++) titleRow.push({ v: '', s: titleStyle });
+    wsData.push(titleRow);
+    merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } });
+
+    // Row 1: Subtitle (date + summary)
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const subRow = [{ v: `Generated: ${today}  |  ${filtered.length} items across ${Object.keys(grouped).length} customers`, s: subtitleStyle }];
+    for (let c = 1; c < colCount; c++) subRow.push({ v: '', s: subtitleStyle });
+    wsData.push(subRow);
+    merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: colCount - 1 } });
+
+    // Row 2: Empty spacer
+    wsData.push([]);
+
+    // For each customer group
+    const customers = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
+    customers.forEach(customer => {
+        const items = grouped[customer];
+        const rowIdx = wsData.length;
+
+        // Customer header row (merged across all columns)
+        const custRow = [{ v: `👤 ${customer}  (${items.length} dropped item${items.length > 1 ? 's' : ''})`, s: customerHeaderStyle }];
+        for (let c = 1; c < colCount; c++) custRow.push({ v: '', s: customerHeaderStyle });
+        wsData.push(custRow);
+        merges.push({ s: { r: rowIdx, c: 0 }, e: { r: rowIdx, c: colCount - 1 } });
+
+        // Column headers
+        wsData.push(COL_HEADERS.map(h => ({ v: h, s: colHeaderStyle })));
+
+        // Data rows
+        items.forEach((d, idx) => {
+            const baseStyle = idx % 2 === 0 ? dataStyleEven : dataStyleOdd;
+            const statusText = d.monthsInactive >= 6 ? '🔴 Lost' : d.monthsInactive >= 3 ? '🟡 At Risk' : '🟠 Recently Stopped';
+            const sStyle = d.monthsInactive >= 6 ? statusLost : d.monthsInactive >= 3 ? statusAtRisk : statusRecent;
+
+            wsData.push([
+                { v: idx + 1, s: { ...baseStyle, alignment: { ...baseStyle.alignment, horizontal: 'center' } } },
+                { v: d.itemCode, s: { ...baseStyle, font: { ...baseStyle.font, bold: true } } },
+                { v: formatMonthLabel(d.lastMonth), s: baseStyle },
+                { v: d.lastQty, s: numStyle(baseStyle), t: 'n' },
+                { v: Math.round(d.avgQtyPerMonth * 10) / 10, s: numStyle(baseStyle), t: 'n' },
+                { v: d.monthsInactive, s: { ...numStyle(baseStyle), font: { ...baseStyle.font, bold: true, color: { rgb: d.monthsInactive >= 6 ? 'DC2626' : d.monthsInactive >= 3 ? 'D97706' : 'EA580C' } } } , t: 'n' },
+                { v: statusText, s: sStyle }
+            ]);
+        });
+
+        // Blank row separator
+        wsData.push([]);
+    });
+
+    // Create worksheet
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws['!merges'] = merges;
+
+    // Column widths
+    ws['!cols'] = [
+        { wch: 5 },   // #
+        { wch: 18 },  // Item Code
+        { wch: 16 },  // Last Purchase
+        { wch: 11 },  // Last Qty
+        { wch: 14 },  // Avg Qty/Month
+        { wch: 16 },  // Months Inactive
+        { wch: 22 }   // Status
+    ];
+
+    // Row heights
+    ws['!rows'] = [{ hpt: 32 }, { hpt: 22 }]; // Title + subtitle
+
+    // Create workbook
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Dropped Items');
+    XLSX.writeFile(wb, 'Dropped_Items_Report_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+}
+
+// ===== 6. STOCK BUILDER =====
+function renderStockBuilder() {
+    if (!salesProcessed) return;
+
+    const searchVal = (document.getElementById('stockBuilderSearch')?.value || '').trim().toLowerCase();
+    const resultsDiv = document.getElementById('stockBuilderResults');
+    const chartsDiv = document.getElementById('stockBuilderCharts');
+
+    if (searchVal.length < 2) {
+        if (resultsDiv) resultsDiv.style.display = 'block';
+        if (chartsDiv) chartsDiv.style.display = 'none';
+        return;
+    }
+
+    // Find matching items (match by item_des or item_code)
+    const { normalized, allYearMonths } = salesProcessed;
+    const matchedRows = normalized.filter(r =>
+        r.itemDes.toLowerCase().includes(searchVal) || r.itemCode.toLowerCase().includes(searchVal)
+    );
+
+    if (matchedRows.length === 0) {
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔍</div><p class="empty-state-text">No items found matching "${escapeHtml(searchVal)}"</p></div>`;
+            resultsDiv.style.display = 'block';
+        }
+        if (chartsDiv) chartsDiv.style.display = 'none';
+        return;
+    }
+
+    // Determine the primary item matched (use the most common item_code)
+    const itemCodeCounts = {};
+    matchedRows.forEach(r => {
+        itemCodeCounts[r.itemCode] = (itemCodeCounts[r.itemCode] || 0) + 1;
+    });
+    const primaryCode = Object.entries(itemCodeCounts).sort((a, b) => b[1] - a[1])[0][0];
+    const primaryRows = matchedRows.filter(r => r.itemCode === primaryCode);
+    const primaryDesc = primaryRows[0]?.itemDes || primaryCode;
+
+    // Aggregate qty per month
+    const monthlyQty = {};
+    const monthlyRevenue = {};
+    const monthlyCustomers = {};
+    const monthlyPrices = {};
+    allYearMonths.forEach(ym => { monthlyQty[ym] = 0; monthlyRevenue[ym] = 0; monthlyCustomers[ym] = new Set(); monthlyPrices[ym] = []; });
+    primaryRows.forEach(r => {
+        if (!r.yearMonth) return;
+        monthlyQty[r.yearMonth] = (monthlyQty[r.yearMonth] || 0) + r.totalUnits;
+        monthlyRevenue[r.yearMonth] = (monthlyRevenue[r.yearMonth] || 0) + r.netAmt;
+        if (!monthlyCustomers[r.yearMonth]) monthlyCustomers[r.yearMonth] = new Set();
+        monthlyCustomers[r.yearMonth].add(r.customer);
+        if (!monthlyPrices[r.yearMonth]) monthlyPrices[r.yearMonth] = [];
+        if (r.unitPrice > 0) monthlyPrices[r.yearMonth].push(r.unitPrice);
+    });
+
+    // Filter to months that have data
+    const activeMonths = allYearMonths.filter(m => monthlyQty[m] > 0);
+
+    // Aggregate qty per customer
+    const custQty = {};
+    primaryRows.forEach(r => {
+        if (!custQty[r.customer]) custQty[r.customer] = { qty: 0, revenue: 0, prices: [] };
+        custQty[r.customer].qty += r.totalUnits;
+        custQty[r.customer].revenue += r.netAmt;
+        if (r.unitPrice > 0) custQty[r.customer].prices.push(r.unitPrice);
+    });
+
+    const totalQty = primaryRows.reduce((s, r) => s + r.totalUnits, 0);
+    const mutedColor = getComputedStyle(document.body).getPropertyValue('--text-muted').trim();
+
+    // Hide empty state, show charts
+    if (resultsDiv) resultsDiv.style.display = 'none';
+    if (chartsDiv) chartsDiv.style.display = 'block';
+
+    // Update titles
+    setText('stockBuilderChartTitle', `Monthly Qty Sold — ${truncate(primaryDesc, 40)} (${primaryCode})`);
+    setText('stockCustTableTitle', `Qty Sold per Customer — ${truncate(primaryDesc, 30)}`);
+    setText('stockMonthTableTitle', `Qty Sold per Month — ${truncate(primaryDesc, 30)}`);
+
+    // Monthly Qty Chart
+    renderChart('chartStockBuilderMonthly', {
+        type: 'bar',
+        data: {
+            labels: activeMonths.map(m => formatMonthLabel(m)),
+            datasets: [{
+                label: 'Qty Sold',
+                data: activeMonths.map(m => monthlyQty[m] || 0),
+                backgroundColor: 'rgba(99, 102, 241, 0.6)',
+                borderColor: '#6366f1',
+                borderWidth: 1.5,
+                borderRadius: 6,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8,
+                    callbacks: { label: ctx => `Qty: ${formatNumber(ctx.parsed.y)}` }
+                }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, maxRotation: 45, font: { size: 10 } } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatNumber(v) }, beginAtZero: true }
+            }
+        }
+    });
+
+    // Customer Table
+    const sortedCusts = Object.entries(custQty).sort((a, b) => b[1].qty - a[1].qty);
+    const custBody = document.getElementById('stockCustBody');
+    if (custBody) {
+        custBody.innerHTML = sortedCusts.map(([name, data], i) => {
+            const avgPrice = data.prices.length > 0 ? data.prices.reduce((s, p) => s + p, 0) / data.prices.length : 0;
+            const share = totalQty > 0 ? ((data.qty / totalQty) * 100) : 0;
+            return `<tr style="--row-index: ${i}">
+                <td class="text-center">${i + 1}</td>
+                <td class="customer-name">${escapeHtml(name)}</td>
+                <td class="text-right" style="font-weight:700;color:var(--accent-primary)">${formatNumber(data.qty)}</td>
+                <td class="text-right" style="color:var(--success)">${formatSalesMoney(avgPrice)}</td>
+                <td class="text-right" style="font-weight:600;color:var(--warning)">${formatSalesMoney(data.revenue)}</td>
+                <td>
+                    <div class="rev-share-bar">
+                        <div class="rev-share-bar-bg"><div class="rev-share-bar-fill" style="width:${Math.min(share, 100)}%"></div></div>
+                        <span class="rev-share-pct">${share.toFixed(1)}%</span>
+                    </div>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+
+    // Month Table
+    const monthBody = document.getElementById('stockMonthBody');
+    if (monthBody) {
+        let prevQty = 0;
+        monthBody.innerHTML = activeMonths.map((m, i) => {
+            const qty = monthlyQty[m] || 0;
+            const rev = monthlyRevenue[m] || 0;
+            const custs = monthlyCustomers[m]?.size || 0;
+            const prices = monthlyPrices[m] || [];
+            const avgP = prices.length > 0 ? prices.reduce((s, p) => s + p, 0) / prices.length : 0;
+
+            const trend = i === 0 ? 0 : qty - prevQty;
+            const trendClass = trend > 0 ? 'trend-up' : trend < 0 ? 'trend-down' : 'trend-flat';
+            const trendIcon = trend > 0 ? '▲' : trend < 0 ? '▼' : '—';
+            prevQty = qty;
+
+            return `<tr style="--row-index: ${i}">
+                <td style="font-weight:600">${formatMonthLabel(m)}</td>
+                <td class="text-right" style="font-weight:700;color:var(--accent-primary)">${formatNumber(qty)}</td>
+                <td class="text-right" style="color:var(--success)">${formatSalesMoney(avgP)}</td>
+                <td class="text-right" style="color:var(--warning)">${formatSalesMoney(rev)}</td>
+                <td class="text-right">${formatNumber(custs)}</td>
+                <td><span class="trend-arrow ${trendClass}">${trendIcon} ${trend !== 0 ? Math.abs(trend) : ''}</span></td>
+            </tr>`;
+        }).join('');
+    }
 }
