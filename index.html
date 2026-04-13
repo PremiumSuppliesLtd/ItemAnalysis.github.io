@@ -11,6 +11,7 @@
         rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.min.js"></script>
 </head>
 
 <body>
@@ -54,6 +55,9 @@
                 </button>
                 <button class="report-tab" data-tab="reorder">
                     <span class="tab-icon">🛒</span>Smart Reorder
+                </button>
+                <button class="report-tab" data-tab="salesintel">
+                    <span class="tab-icon">💰</span>Sales Intel
                 </button>
             </div>
         </div>
@@ -210,6 +214,9 @@
                     <h2 class="section-title">Dropped Items Report</h2>
                     <p class="section-subtitle">Customers who stopped buying items they used to purchase regularly</p>
                 </div>
+                <button class="nav-action-btn" id="exportDroppedBtn" onclick="exportDroppedToExcel()" title="Export to Excel" style="margin-left:auto; padding:8px 16px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; background:var(--success-bg); color:var(--success); border:1px solid rgba(16,185,129,0.3); border-radius:var(--radius-sm); cursor:pointer; font-family:inherit; transition:var(--transition);">
+                    📥 Export Excel
+                </button>
                 <span class="section-badge" id="droppedBadge">0 customers</span>
             </div>
 
@@ -569,34 +576,41 @@
                 <div class="section-icon reorder-icon">🛒</div>
                 <div>
                     <h2 class="section-title">Purchasing Action Plan</h2>
-                    <p class="section-subtitle">Clear, actionable order recommendations grouped by supplier based on your sales and current stock.</p>
+                    <p class="section-subtitle">Clear, actionable order recommendations grouped by supplier based on
+                        your sales and current stock.</p>
                 </div>
                 <span class="section-badge success" id="reorderTotalCostBadge">Total: 0.00</span>
             </div>
 
             <!-- Action Plan KPIs -->
-            <div class="reorder-kpi-strip" id="actionPlanKpis" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
-                <div class="reorder-kpi-card rk-urgent" style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--primary); display: flex; align-items: center; gap: 16px;">
+            <div class="reorder-kpi-strip" id="actionPlanKpis"
+                style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                <div class="reorder-kpi-card rk-urgent"
+                    style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--primary); display: flex; align-items: center; gap: 16px;">
                     <div class="rk-icon" style="font-size: 24px;">🏭</div>
                     <div class="rk-info">
                         <div class="rk-value" id="planSuppliers" style="font-size: 24px; font-weight: 700;">0</div>
-                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Suppliers to Contact</div>
+                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Suppliers to Contact
+                        </div>
                     </div>
                 </div>
-                <div class="reorder-kpi-card rk-total" style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--accent-primary); display: flex; align-items: center; gap: 16px;">
+                <div class="reorder-kpi-card rk-total"
+                    style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--accent-primary); display: flex; align-items: center; gap: 16px;">
                     <div class="rk-icon" style="font-size: 24px;">📦</div>
                     <div class="rk-info">
                         <div class="rk-value" id="planItems" style="font-size: 24px; font-weight: 700;">0</div>
-                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Total Items to Order</div>
+                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Total Items to Order
+                        </div>
                     </div>
                 </div>
-                <div class="reorder-kpi-card rk-cost" style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--info); display: flex; align-items: center; gap: 16px;">
+                <div class="reorder-kpi-card rk-cost"
+                    style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--info); display: flex; align-items: center; gap: 16px;">
                     <div class="rk-icon" style="font-size: 24px;">💰</div>
                     <div class="rk-info">
                         <div class="rk-value" id="planEstCost" style="font-size: 24px; font-weight: 700;">0.00</div>
-                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Estimated Total Cost</div>
+                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Estimated Total Cost
+                        </div>
                     </div>
-                </div>
                 </div>
             </div>
 
@@ -604,47 +618,549 @@
             <div class="filter-bar">
                 <div class="filter-group" style="flex: 1;">
                     <label class="filter-label">Search Supplier or Item</label>
-                    <input type="text" class="filter-input" id="planSearch" placeholder="Type supplier name or item code..." autocomplete="off" oninput="renderReorder()">
+                    <input type="text" class="filter-input" id="planSearch" placeholder="Type supplier name or item code..."
+                        autocomplete="off" oninput="renderReorder()">
+                </div>
+                <div class="filter-group" style="flex: 0 0 auto;">
+                    <label class="filter-label">View Layout</label>
+                    <div
+                        style="display: flex; gap: 8px; background: var(--bg-card); padding: 4px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+                        <button id="btnViewCards" onclick="setReorderView('cards')"
+                            style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent-glow); color: var(--accent-primary); font-weight: 600; cursor: pointer; transition: 0.2s; font-family: inherit;">📁
+                            Cards</button>
+                        <button id="btnViewList" onclick="setReorderView('list')"
+                            style="padding: 6px 16px; border-radius: 4px; border: none; background: transparent; color: var(--text-secondary); font-weight: 600; cursor: pointer; transition: 0.2s; font-family: inherit;">📋
+                            List</button>
+                    </div>
                 </div>
             </div>
 
-            <!-- Action Plan Container -->
-            <div id="supplierActionPlans">
-                <div class="empty-state">
-                    <div class="empty-state-icon">🛒</div>
-                    <p class="empty-state-text">Loading purchasing data...</p>
+            <!-- Card View Container -->
+            <div id="reorderCardsView">
+                <div id="supplierActionPlans">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🛒</div>
+                        <p class="empty-state-text">Loading purchasing data...</p>
+                    </div>
                 </div>
             </div>
-            
-            <!-- Simplified Table -->
-            <div class="section-header" style="margin-top: 32px;">
-                <div class="section-icon info">📋</div>
-                <div>
-                    <h2 class="section-title">All Required Items</h2>
-                    <p class="section-subtitle">A simple list of every item that needs to be restocked.</p>
+
+            <!-- List View Container -->
+            <div id="reorderListView" style="display: none;">
+                <div class="section-header" style="margin-top: 20px;">
+                    <div class="section-icon info">📋</div>
+                    <div>
+                        <h2 class="section-title">All Required Items</h2>
+                        <p class="section-subtitle">A simple list of every item that needs to be restocked.</p>
+                    </div>
                 </div>
-            </div>
-            <div class="table-container">
-                <div class="table-scroll">
-                    <table class="data-table" id="simpleOrderTable">
-                        <thead>
-                            <tr>
-                                <th>Supplier</th>
-                                <th>Item Code</th>
-                                <th>Item Name</th>
-                                <th class="text-right">Current Stock (PCS)</th>
-                                <th class="text-right">Order Qty (PCS)</th>
-                                <th class="text-right">Est. Price/PC</th>
-                                <th class="text-right">Total Est. Cost</th>
-                            </tr>
-                        </thead>
-                        <tbody id="simpleOrderBody">
-                            <tr><td colspan="7" class="empty-msg">Waiting for data...</td></tr>
-                        </tbody>
-                    </table>
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table class="data-table" id="simpleOrderTable">
+                            <thead>
+                                <tr>
+                                    <th>Supplier</th>
+                                    <th>Item Code</th>
+                                    <th>Item Name</th>
+                                    <th>Last Purchase</th>
+                                    <th class="text-right">Current Stock (PCS)</th>
+                                    <th class="text-right">Order Qty (PCS)</th>
+                                    <th class="text-right">Est. Price/PC</th>
+                                    <th class="text-right">Total Est. Cost</th>
+                                </tr>
+                            </thead>
+                            <tbody id="simpleOrderBody">
+                                <tr>
+                                    <td colspan="8" class="empty-msg">Waiting for data...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
+
+        <!-- ====== SALES INTELLIGENCE TAB ====== -->
+        <div id="tab-salesintel" class="tab-content">
+
+            <!-- Sales Intel Hero -->
+            <div class="hero-section sales-hero" id="salesHeroSection">
+                <h1 class="hero-title">
+                    <span class="hero-title-icon">💰</span>
+                    Sales Intelligence
+                </h1>
+                <p class="hero-subtitle">
+                    Revenue analytics, price tracking, and customer insights from your sales data. Make data-driven
+                    decisions to maximize profitability.
+                </p>
+                <div class="hero-stats">
+                    <div class="hero-stat">
+                        <span class="hero-stat-value" id="salesHeroRevenue">0</span>
+                        <span class="hero-stat-label">Total Revenue</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat-value" id="salesHeroUnits">0</span>
+                        <span class="hero-stat-label">Units Sold</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat-value" id="salesHeroItems">0</span>
+                        <span class="hero-stat-label">Unique Items</span>
+                    </div>
+                    <div class="hero-stat">
+                        <span class="hero-stat-value" id="salesHeroCustomers">0</span>
+                        <span class="hero-stat-label">Customers</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sales Intel Sub-Navigation -->
+            <div class="sales-sub-nav" id="salesSubNav">
+                <button class="sales-sub-tab active" data-subtab="revenue">📊 Revenue Overview</button>
+                <button class="sales-sub-tab" data-subtab="topgen">🏆 Top Generators</button>
+                <button class="sales-sub-tab" data-subtab="priceanalytics">💲 Price Analytics</button>
+                <button class="sales-sub-tab" data-subtab="custrevenue">👥 Customer Analysis</button>
+                <button class="sales-sub-tab" data-subtab="periodcomp">📅 Period Comparison</button>
+                <button class="sales-sub-tab" data-subtab="stockbuilder">📦 Stock Builder</button>
+            </div>
+
+            <!-- ====== SUB: REVENUE OVERVIEW ====== -->
+            <div id="sales-sub-revenue" class="sales-sub-content active-sub">
+                <!-- Revenue KPI Strip -->
+                <div class="kpi-strip sales-kpi-strip" id="salesKpiStrip">
+                    <div class="kpi-card kpi-revenue">
+                        <div class="kpi-icon-wrap">💵</div>
+                        <div class="kpi-info">
+                            <div class="kpi-label">Total Revenue</div>
+                            <div class="kpi-value" id="kpiTotalRevenue">0</div>
+                        </div>
+                    </div>
+                    <div class="kpi-card kpi-avgprice">
+                        <div class="kpi-icon-wrap">🏷️</div>
+                        <div class="kpi-info">
+                            <div class="kpi-label">Avg Selling Price</div>
+                            <div class="kpi-value" id="kpiAvgPrice">0</div>
+                        </div>
+                    </div>
+                    <div class="kpi-card kpi-transactions">
+                        <div class="kpi-icon-wrap">🧾</div>
+                        <div class="kpi-info">
+                            <div class="kpi-label">Total Transactions</div>
+                            <div class="kpi-value" id="kpiTransactions">0</div>
+                        </div>
+                    </div>
+                    <div class="kpi-card kpi-avgtxn">
+                        <div class="kpi-icon-wrap">📈</div>
+                        <div class="kpi-info">
+                            <div class="kpi-label">Avg Transaction Value</div>
+                            <div class="kpi-value" id="kpiAvgTxn">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Revenue Charts -->
+                <div class="charts-grid">
+                    <div class="chart-card" style="animation-delay: 0.1s">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📈</span>
+                            <span class="chart-header-title">Monthly Revenue Trend</span>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="chartSalesRevenueTrend"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card" style="animation-delay: 0.2s">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">🍩</span>
+                            <span class="chart-header-title">Revenue by Top 10 Customers</span>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="chartSalesRevenueByCustomer"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="charts-grid">
+                    <div class="chart-card" style="animation-delay: 0.3s">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📦</span>
+                            <span class="chart-header-title">Monthly Units Sold</span>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="chartSalesUnitsTrend"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card" style="animation-delay: 0.4s">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">💰</span>
+                            <span class="chart-header-title">Avg Selling Price Trend</span>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="chartSalesAvgPriceTrend"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ====== SUB: TOP GENERATORS ====== -->
+            <div id="sales-sub-topgen" class="sales-sub-content">
+                <div class="section-header">
+                    <div class="section-icon success">🏆</div>
+                    <div>
+                        <h2 class="section-title">Top Revenue Generators</h2>
+                        <p class="section-subtitle">Items and customers generating the most revenue — Pareto analysis
+                            included</p>
+                    </div>
+                </div>
+
+                <!-- Pareto Insight Card -->
+                <div class="customer-detail-card" id="paretoInsightCard">
+                    <div class="customer-detail-header">
+                        <div class="customer-detail-avatar">📊</div>
+                        <div>
+                            <h3 style="font-size:16px;font-weight:700">Revenue Concentration</h3>
+                            <p style="font-size:13px;color:var(--text-muted)" id="paretoInsightText">Calculating...</p>
+                        </div>
+                    </div>
+                    <div class="customer-detail-meta" id="paretoMeta">
+                        <div class="customer-meta-item">
+                            <span class="customer-meta-label">Top 20% Items</span>
+                            <span class="customer-meta-value" id="paretoTop20Pct" style="color:var(--success)">0%</span>
+                        </div>
+                        <div class="customer-meta-item">
+                            <span class="customer-meta-label">Top 5 Items Revenue</span>
+                            <span class="customer-meta-value" id="paretoTop5Revenue"
+                                style="color:var(--accent-primary)">0</span>
+                        </div>
+                        <div class="customer-meta-item">
+                            <span class="customer-meta-label">Bottom 50% Revenue Contribution</span>
+                            <span class="customer-meta-value" id="paretoBottom50" style="color:var(--warning)">0%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📊</span>
+                            <span class="chart-header-title">Top 15 Items by Revenue</span>
+                        </div>
+                        <div class="chart-body" style="height:400px">
+                            <canvas id="chartTopItemsRevenue"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">👥</span>
+                            <span class="chart-header-title">Top 15 Customers by Revenue</span>
+                        </div>
+                        <div class="chart-body" style="height:400px">
+                            <canvas id="chartTopCustomersRevenue"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table class="data-table" id="topGenTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Item Code</th>
+                                    <th>Description</th>
+                                    <th class="text-right">Total Revenue</th>
+                                    <th class="text-right">Total Units</th>
+                                    <th class="text-right">Avg Price</th>
+                                    <th class="text-right">Revenue Share</th>
+                                    <th>Cumulative</th>
+                                </tr>
+                            </thead>
+                            <tbody id="topGenBody">
+                                <tr>
+                                    <td colspan="8" class="empty-msg">Loading sales data...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ====== SUB: PRICE ANALYTICS ====== -->
+            <div id="sales-sub-priceanalytics" class="sales-sub-content">
+                <div class="section-header">
+                    <div class="section-icon warning">💲</div>
+                    <div>
+                        <h2 class="section-title">Price Analytics</h2>
+                        <p class="section-subtitle">Track price variations, identify items with significant price
+                            fluctuation, and analyze price vs volume</p>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📉</span>
+                            <span class="chart-header-title">Top 10 Items by Price Variation</span>
+                        </div>
+                        <div class="chart-body" style="height:400px">
+                            <canvas id="chartPriceVariation"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">🔀</span>
+                            <span class="chart-header-title">Price vs Volume (Top Items)</span>
+                        </div>
+                        <div class="chart-body" style="height:400px">
+                            <canvas id="chartPriceVsVolume"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="filter-bar">
+                    <div class="filter-group">
+                        <label class="filter-label">Search Item</label>
+                        <input type="text" class="filter-input" id="priceSearchItem"
+                            placeholder="Type item code or description..." autocomplete="off">
+                    </div>
+                    <div class="filter-group" style="max-width:160px">
+                        <label class="filter-label">Sort By</label>
+                        <select class="filter-input" id="priceSortBy">
+                            <option value="variation_desc">Price Variation (High→Low)</option>
+                            <option value="avgprice_desc">Avg Price (High→Low)</option>
+                            <option value="revenue_desc">Revenue (High→Low)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table class="data-table" id="priceAnalyticsTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Item Code</th>
+                                    <th>Description</th>
+                                    <th class="text-right">Min Price</th>
+                                    <th class="text-right">Max Price</th>
+                                    <th class="text-right">Avg Price</th>
+                                    <th class="text-right">Variation %</th>
+                                    <th class="text-right">Total Units</th>
+                                    <th class="text-right">Total Revenue</th>
+                                </tr>
+                            </thead>
+                            <tbody id="priceAnalyticsBody">
+                                <tr>
+                                    <td colspan="9" class="empty-msg">Loading price data...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ====== SUB: CUSTOMER REVENUE ANALYSIS ====== -->
+            <div id="sales-sub-custrevenue" class="sales-sub-content">
+                <div class="section-header">
+                    <div class="section-icon info">👥</div>
+                    <div>
+                        <h2 class="section-title">Customer Revenue Analysis</h2>
+                        <p class="section-subtitle">Revenue per customer over time with basket metrics and growth indicators</p>
+                    </div>
+                </div>
+
+                <div class="filter-bar">
+                    <div class="filter-group">
+                        <label class="filter-label">Select Customer</label>
+                        <select class="filter-input" id="salesCustSelect">
+                            <option value="ALL">All Customers</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="charts-grid" style="grid-template-columns: 1fr;">
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📈</span>
+                            <span class="chart-header-title" id="custRevenueChartTitle">Customer Revenue Trend</span>
+                        </div>
+                        <div class="chart-body" style="height: 380px;">
+                            <canvas id="chartCustRevenueTrend"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table class="data-table" id="custRevenueTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Customer</th>
+                                    <th class="text-right">Total Revenue</th>
+                                    <th class="text-right">Total Units</th>
+                                    <th class="text-right">Transactions</th>
+                                    <th class="text-right">Avg Txn Value</th>
+                                    <th class="text-right">Avg Items/Txn</th>
+                                    <th>Growth</th>
+                                </tr>
+                            </thead>
+                            <tbody id="custRevenueBody">
+                                <tr>
+                                    <td colspan="8" class="empty-msg">Loading customer data...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ====== SUB: PERIOD COMPARISON ====== -->
+            <div id="sales-sub-periodcomp" class="sales-sub-content">
+                <div class="section-header">
+                    <div class="section-icon purple">📅</div>
+                    <div>
+                        <h2 class="section-title">Period Comparison</h2>
+                        <p class="section-subtitle">Year-over-Year and Month-over-Month revenue comparison with seasonal patterns</p>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📊</span>
+                            <span class="chart-header-title">Year-over-Year Monthly Revenue</span>
+                        </div>
+                        <div class="chart-body" style="height: 400px;">
+                            <canvas id="chartYoYRevenue"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📈</span>
+                            <span class="chart-header-title">Month-over-Month Growth Rate</span>
+                        </div>
+                        <div class="chart-body" style="height: 400px;">
+                            <canvas id="chartMoMGrowth"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table class="data-table" id="periodCompTable">
+                            <thead>
+                                <tr>
+                                    <th>Month</th>
+                                    <th class="text-right" id="periodYear1Col">Year 1</th>
+                                    <th class="text-right" id="periodYear2Col">Year 2</th>
+                                    <th class="text-right">Change</th>
+                                    <th class="text-right">Growth %</th>
+                                    <th>Trend</th>
+                                </tr>
+                            </thead>
+                            <tbody id="periodCompBody">
+                                <tr>
+                                    <td colspan="6" class="empty-msg">Loading period data...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ====== SUB: STOCK BUILDER ====== -->
+            <div id="sales-sub-stockbuilder" class="sales-sub-content">
+                <div class="section-header">
+                    <div class="section-icon reorder-icon">📦</div>
+                    <div>
+                        <h2 class="section-title">Stock Builder</h2>
+                        <p class="section-subtitle">Search any item to see how many units you sold per month and per customer — helps you plan stock levels</p>
+                    </div>
+                </div>
+
+                <div class="filter-bar">
+                    <div class="filter-group" style="flex:1">
+                        <label class="filter-label">Search Item Description or Code</label>
+                        <input type="text" class="filter-input" id="stockBuilderSearch" placeholder="Type item description or code..." autocomplete="off">
+                    </div>
+                </div>
+
+                <div id="stockBuilderResults">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔍</div>
+                        <p class="empty-state-text">Search an item above to see qty sold per month and per customer</p>
+                    </div>
+                </div>
+
+                <!-- Stock Builder Chart: Qty per Month -->
+                <div id="stockBuilderCharts" style="display:none">
+                    <div class="charts-grid" style="grid-template-columns: 1fr;">
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <span class="chart-header-icon">📊</span>
+                                <span class="chart-header-title" id="stockBuilderChartTitle">Monthly Qty Sold</span>
+                            </div>
+                            <div class="chart-body" style="height: 380px;">
+                                <canvas id="chartStockBuilderMonthly"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Qty per Customer Table -->
+                    <div class="section-header" style="margin-top: 20px;">
+                        <div class="section-icon info">👥</div>
+                        <div>
+                            <h2 class="section-title" id="stockCustTableTitle">Qty Sold per Customer</h2>
+                            <p class="section-subtitle">Breakdown of total quantity sold to each customer</p>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <div class="table-scroll">
+                            <table class="data-table" id="stockCustTable">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Customer</th>
+                                        <th class="text-right">Total Qty</th>
+                                        <th class="text-right">Avg Price</th>
+                                        <th class="text-right">Total Revenue</th>
+                                        <th>Share</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="stockCustBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Qty per Month Table -->
+                    <div class="section-header" style="margin-top: 20px;">
+                        <div class="section-icon success">📅</div>
+                        <div>
+                            <h2 class="section-title" id="stockMonthTableTitle">Qty Sold per Month</h2>
+                            <p class="section-subtitle">Monthly breakdown to identify trends and seasonality</p>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <div class="table-scroll">
+                            <table class="data-table" id="stockMonthTable">
+                                <thead>
+                                    <tr>
+                                        <th>Month</th>
+                                        <th class="text-right">Qty Sold</th>
+                                        <th class="text-right">Avg Price</th>
+                                        <th class="text-right">Revenue</th>
+                                        <th class="text-right">Customers</th>
+                                        <th>Trend</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="stockMonthBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+        <!-- END SALES INTELLIGENCE TAB -->
 
     </div>
 
@@ -664,6 +1180,10 @@
         // 3. Reorder_Level spreadsheet (stock reorder levels)
         // PASTE YOUR REORDER_LEVEL DEPLOYED WEB APP URL HERE:
         const REORDER_LEVEL_URL = "https://script.google.com/macros/s/AKfycbwH-F1YPbQf9dX1PcIZ-3G51r6y4cGpQps3opqPGVbvK7711YMUVWk1myVjFWN0jtjQsQ/exec";
+
+        // 4. Data2 spreadsheet (sales data with selling prices)
+        // PASTE YOUR DATA2 DEPLOYED WEB APP URL HERE:
+        const DATA2_URL = "https://script.google.com/macros/s/AKfycbzjzTrQKwvk0XT5HWZ_ot3rBjsks9Rv8nFYt9ZLsT6WvP5RFaUnkb3TS5CXERw2ak5GHg/exec";
     </script>
 
     <script src="script.js"></script>
