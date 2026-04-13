@@ -1644,6 +1644,210 @@ body::before {
     font-size: 12px;
 }
 
+/* ===== SALES INTELLIGENCE TAB ===== */
+
+/* Sales Hero Override */
+.sales-hero {
+    background: linear-gradient(135deg, var(--bg-card), rgba(245, 158, 11, 0.08));
+}
+
+.sales-hero::before {
+    background: radial-gradient(circle, rgba(245, 158, 11, 0.1) 0%, transparent 70%);
+}
+
+.sales-hero .hero-stat-value {
+    background: linear-gradient(135deg, #f59e0b, #fbbf24);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+/* Sub-Navigation Pills */
+.sales-sub-nav {
+    display: flex;
+    gap: 6px;
+    padding: 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    margin-bottom: 28px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    animation: fadeIn 0.5s ease-out 0.2s backwards;
+}
+
+.sales-sub-nav::-webkit-scrollbar { display: none; }
+
+.sales-sub-tab {
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: var(--transition);
+    white-space: nowrap;
+    font-family: inherit;
+    position: relative;
+    overflow: hidden;
+}
+
+.sales-sub-tab::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    width: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #f59e0b, #fbbf24);
+    transition: all 0.3s ease;
+    transform: translateX(-50%);
+    border-radius: 2px;
+}
+
+.sales-sub-tab:hover {
+    color: var(--text-primary);
+    background: rgba(245, 158, 11, 0.06);
+}
+
+.sales-sub-tab:hover::before {
+    width: 60%;
+}
+
+.sales-sub-tab.active {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.1);
+    box-shadow: 0 2px 12px rgba(245, 158, 11, 0.15);
+}
+
+.sales-sub-tab.active::before {
+    width: 80%;
+}
+
+/* Sub-content sections */
+.sales-sub-content {
+    display: none;
+    animation: salesSubFadeIn 0.4s ease-out;
+}
+
+.sales-sub-content.active-sub {
+    display: block;
+}
+
+@keyframes salesSubFadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Revenue-themed KPI Cards */
+.kpi-card.kpi-revenue::after { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.kpi-card.kpi-avgprice::after { background: linear-gradient(90deg, #10b981, #34d399); }
+.kpi-card.kpi-transactions::after { background: linear-gradient(90deg, #3b82f6, #06b6d4); }
+.kpi-card.kpi-avgtxn::after { background: linear-gradient(90deg, #8b5cf6, #a78bfa); }
+
+.kpi-card.kpi-revenue .kpi-icon-wrap { background: rgba(245, 158, 11, 0.12); }
+.kpi-card.kpi-avgprice .kpi-icon-wrap { background: rgba(16, 185, 129, 0.12); }
+.kpi-card.kpi-transactions .kpi-icon-wrap { background: rgba(59, 130, 246, 0.12); }
+.kpi-card.kpi-avgtxn .kpi-icon-wrap { background: rgba(139, 92, 246, 0.12); }
+
+.kpi-card.kpi-revenue .kpi-value { color: #f59e0b; }
+.kpi-card.kpi-avgprice .kpi-value { color: #10b981; }
+.kpi-card.kpi-transactions .kpi-value { color: #3b82f6; }
+.kpi-card.kpi-avgtxn .kpi-value { color: #8b5cf6; }
+
+/* Revenue Share / Cumulative Bar */
+.rev-share-bar {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+}
+
+.rev-share-bar-bg {
+    flex: 1;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+    overflow: hidden;
+    min-width: 60px;
+}
+
+.rev-share-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    background: linear-gradient(90deg, #f59e0b, #fbbf24);
+}
+
+.rev-share-bar-fill.cumulative {
+    background: linear-gradient(90deg, #6366f1, #8b5cf6);
+}
+
+.rev-share-pct {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    min-width: 40px;
+    text-align: right;
+}
+
+/* Price variation badge */
+.price-var-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.price-var-badge.high {
+    background: var(--danger-bg);
+    color: var(--danger);
+}
+
+.price-var-badge.medium {
+    background: var(--warning-bg);
+    color: var(--warning);
+}
+
+.price-var-badge.low {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+/* Growth indicator in Customer Revenue */
+.growth-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.growth-indicator.positive {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.growth-indicator.negative {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.growth-indicator.neutral {
+    background: var(--info-bg);
+    color: var(--info);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 768px) {
     .top-navbar {
@@ -1707,6 +1911,16 @@ body::before {
 
     .bundle-stats {
         grid-template-columns: repeat(3, 1fr);
+    }
+
+    .sales-sub-nav {
+        padding: 4px;
+        gap: 4px;
+    }
+
+    .sales-sub-tab {
+        padding: 8px 14px;
+        font-size: 11px;
     }
 }
 
@@ -1883,4 +2097,20 @@ body::before {
     font-size: 16px;
     font-weight: 700;
     color: var(--text-primary);
+}
+
+/* ===== EXPORT BUTTON ===== */
+#exportDroppedBtn:hover {
+    background: rgba(16, 185, 129, 0.2);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);
+}
+
+/* ===== STOCK BUILDER ===== */
+#stockBuilderResults .empty-state {
+    min-height: 180px;
+}
+
+#stockBuilderCharts .section-header {
+    animation: cardPop 0.3s ease-out;
 }
