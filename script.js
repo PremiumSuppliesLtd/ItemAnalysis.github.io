@@ -210,6 +210,28 @@ function initEventListeners() {
     // Stock Builder search
     const stockSearch = document.getElementById('stockBuilderSearch');
     if (stockSearch) stockSearch.addEventListener('input', debounce(renderStockBuilder, 400));
+
+    // Item Lookup search
+    const ilSearch = document.getElementById('itemlookupSearchInput');
+    if (ilSearch) ilSearch.addEventListener('input', debounce(runItemLookup, 350));
+    const ilCustFilter = document.getElementById('itemlookupCustFilter');
+    if (ilCustFilter) ilCustFilter.addEventListener('input', debounce(renderItemLookupTable, 300));
+    const ilSortBy = document.getElementById('itemlookupSortBy');
+    if (ilSortBy) ilSortBy.addEventListener('change', renderItemLookupTable);
+    const ilClearBtn = document.getElementById('itemlookupClearBtn');
+    if (ilClearBtn) ilClearBtn.addEventListener('click', () => {
+        const inp = document.getElementById('itemlookupSearchInput');
+        if (inp) { inp.value = ''; runItemLookup(); }
+    });
+    // View mode toggle (All / Latest per Customer)
+    document.querySelectorAll('.il-view-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.il-view-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            ilViewMode = btn.dataset.view || 'all';
+            renderItemLookupTable();
+        });
+    });
 }
 
 // ===== DATA FETCHING =====
@@ -507,7 +529,7 @@ function populateSelect(id, options, defaultValue, defaultLabel) {
 
 // ===== RENDER ROUTER =====
 function renderCurrentTab() {
-    if (rawData.length === 0 && currentTab !== 'salesintel') return;
+    if (rawData.length === 0 && currentTab !== 'salesintel' && currentTab !== 'itemlookup') return;
     switch (currentTab) {
         case 'overview': renderOverview(); break;
         case 'dropped': renderDropped(); break;
@@ -518,6 +540,7 @@ function renderCurrentTab() {
         case 'deepdive': /* Wait for user action */ break;
         case 'reorder': renderReorder(); break;
         case 'salesintel': renderSalesIntel(); break;
+        case 'itemlookup': initItemLookupTab(); break;
     }
 }
 
@@ -1937,7 +1960,9 @@ function processSalesData() {
         const totalUnits = parseFloat((row[totalUnitsKey] || '0').toString().replace(/,/g, '')) || 0;
         // Calculate revenue from unit_price * total_units (ignore net_amt column)
         const netAmt = unitPrice * totalUnits;
-        const year = parseInt((row[yearKey] || '0').toString()) || 0;
+        const dateStrForYear = (row[yearKey] || '').toString().trim();
+        const parsedDateForYear = parseDateSafe(dateStrForYear);
+        const year = (parsedDateForYear.getTime() > 0) ? parsedDateForYear.getFullYear() : (parseInt(dateStrForYear) || 0);
         const month = parseInt((row[monthKey] || '0').toString()) || 0;
 
         return {
@@ -3010,4 +3035,515 @@ function renderStockBuilder() {
             </tr>`;
         }).join('');
     }
+}
+
+// =========================================================
+// ITEM LOOKUP MODULE
+// =========================================================
+
+let itemLookupCurrentData = null;
+let itemLookupCostMap = {};
+let itemLookupTabInitialized = false;
+let ilViewMode = 'all'; // 'all' | 'latest'
+
+// --- Initialize Tab ---
+function initItemLookupTab() {
+    // Build datalist from salesProcessed items
+    if (salesProcessed && !itemLookupTabInitialized) {
+        const datalist = document.getElementById('itemlookupDatalist');
+        if (datalist && datalist.children.length === 0) {
+            const seen = new Set();
+            salesProcessed.normalized.forEach(r => {
+                const code = r.itemCode.trim();
+                const des = r.itemDes.trim();
+                if (code && !seen.has(code)) {
+                    seen.add(code);
+                    const opt = document.createElement('option');
+                    opt.value = code;
+                    datalist.appendChild(opt);
+                }
+                if (des && !seen.has(des)) {
+                    seen.add(des);
+                    const opt2 = document.createElement('option');
+                    opt2.value = des;
+                    datalist.appendChild(opt2);
+                }
+            });
+        }
+        buildItemLookupCostMap();
+        itemLookupTabInitialized = true;
+    }
+}
+
+function buildItemLookupCostMap() {
+    itemLookupCostMap = {};
+    if (!purchaseData || purchaseData.length === 0) {
+        console.warn('[ItemLookup] purchaseData is empty — cannot build cost map');
+        return;
+    }
+
+    const pHeaders = Object.keys(purchaseData[0]);
+    console.log('[ItemLookup] Data1 headers:', pHeaders);
+    console.log('[ItemLookup] Sample row:', purchaseData[0]);
+
+    // --- Item Code column ---
+    // Try every known variant (column names differ between installs)
+    const pItemCodeKey =
+        pHeaders.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) ||
+        pHeaders.find(h => h.toLowerCase().replace(/[\s_]/g, '') === 'itemcode') ||
+        pHeaders.find(h => h.toUpperCase().includes('ITEM CODE')) ||
+        pHeaders.find(h => h.toLowerCase().includes('item code')) ||
+        pHeaders.find(h => h.toLowerCase().startsWith('item')) ||
+        pHeaders[0];
+
+    // --- Date column ---
+    const pDateKey =
+        pHeaders.find(h => h.toUpperCase().includes('TRAN_DATE')) ||
+        pHeaders.find(h => h.toUpperCase() === 'DATE') ||
+        pHeaders.find(h => h.toUpperCase().includes('DATE') && !h.toUpperCase().includes('YEAR')) ||
+        pHeaders.find(h => h.toLowerCase().includes('date')) ||
+        pHeaders[4];
+
+    // --- Price Per PC column ---
+    const pPricePCKey =
+        pHeaders.find(h => h.toUpperCase().includes('PRICE PER PC')) ||
+        pHeaders.find(h => h.toUpperCase().replace(/[\s_]/g, '').includes('PRICEPERPC')) ||
+        pHeaders.find(h => h.toUpperCase().includes('PRICE/PC')) ||
+        pHeaders.find(h => h.toUpperCase().includes('PRICE') && h.toUpperCase().includes('PC')) ||
+        pHeaders.find(h => h.toUpperCase().includes('UNIT COST') || h.toUpperCase().includes('UNITCOST')) ||
+        pHeaders.find(h => h.toUpperCase().includes('COST') && h.toUpperCase().includes('PC')) ||
+        pHeaders[6];
+
+    console.log('[ItemLookup] Using columns — item_code:', pItemCodeKey, '| date:', pDateKey, '| price_pc:', pPricePCKey);
+
+    const temp = {};
+    let rowsAdded = 0;
+    purchaseData.forEach(row => {
+        const itemCode = (row[pItemCodeKey] || '').toString().trim();
+        if (!itemCode) return;
+        const dateStr = (row[pDateKey] || '').toString().trim();
+        const rawPrice = (row[pPricePCKey] || '0').toString().replace(/,/g, '');
+        const pricePC = parseFloat(rawPrice) || 0;
+        if (!temp[itemCode]) temp[itemCode] = [];
+        temp[itemCode].push({ dateStr, pricePC });
+        rowsAdded++;
+    });
+
+    console.log('[ItemLookup] Rows processed:', rowsAdded, '| Unique item codes:', Object.keys(temp).length);
+    if (Object.keys(temp).length > 0) {
+        const sampleCode = Object.keys(temp)[0];
+        console.log('[ItemLookup] Sample item code:', sampleCode, '→', temp[sampleCode].slice(0, 3));
+    }
+
+    Object.entries(temp).forEach(([code, entries]) => {
+        const validEntries = entries.filter(e => e.pricePC > 0);
+        if (validEntries.length === 0) return;
+        const sorted = validEntries.slice().sort((a, b) =>
+            parseDateSafe(b.dateStr) - parseDateSafe(a.dateStr)
+        );
+        itemLookupCostMap[code] = {
+            pricePC: sorted[0].pricePC,
+            date: sorted[0].dateStr
+        };
+    });
+
+    console.log('[ItemLookup] Cost map built —', Object.keys(itemLookupCostMap).length, 'items with costs');
+    if (Object.keys(itemLookupCostMap).length > 0) {
+        const sampleCode = Object.keys(itemLookupCostMap)[0];
+        console.log('[ItemLookup] Sample cost entry:', sampleCode, '→', itemLookupCostMap[sampleCode]);
+    }
+}
+
+function parseDateSafe(str) {
+    if (!str) return new Date(0);
+
+    // Handle DD-MM-YYYY (dash separator — our primary format)
+    const dashParts = str.split('-');
+    if (dashParts.length === 3) {
+        const p0 = parseInt(dashParts[0]), p1 = parseInt(dashParts[1]), p2 = parseInt(dashParts[2]);
+        // DD-MM-YYYY: day <= 31, month <= 12, year 4 digits
+        if (p0 >= 1 && p0 <= 31 && p1 >= 1 && p1 <= 12 && p2 > 1000) {
+            const d = new Date(p2, p1 - 1, p0);
+            if (!isNaN(d.getTime())) return d;
+        }
+    }
+
+    // Handle DD/MM/YYYY (slash separator)
+    const slashParts = str.split('/');
+    if (slashParts.length === 3) {
+        const p0 = parseInt(slashParts[0]), p1 = parseInt(slashParts[1]), p2 = parseInt(slashParts[2]);
+        if (p0 >= 1 && p0 <= 31 && p1 >= 1 && p1 <= 12 && p2 > 1000) {
+            const d = new Date(p2, p1 - 1, p0);
+            if (!isNaN(d.getTime())) return d;
+        }
+    }
+
+    // Fallback to native parsing (YYYY-MM-DD ISO format)
+    const native = new Date(str);
+    if (!isNaN(native.getTime())) return native;
+
+    return new Date(0);
+}
+
+// --- Main Search Runner ---
+function runItemLookup() {
+    const searchVal = (document.getElementById('itemlookupSearchInput')?.value || '').trim();
+    const resultsDiv = document.getElementById('itemlookupResults');
+    const emptyDiv = document.getElementById('itemlookupEmpty');
+    const hintEl = document.getElementById('itemlookupHint');
+
+    if (searchVal.length < 2) {
+        if (resultsDiv) resultsDiv.style.display = 'none';
+        if (emptyDiv) {
+            emptyDiv.style.display = 'flex';
+            const et = emptyDiv.querySelector('.itemlookup-empty-text');
+            if (et) et.textContent = 'Search for an item above to instantly discover which customers are buying it, at what prices, and compare against your cost';
+        }
+        if (hintEl) hintEl.textContent = 'Start typing at least 2 characters to search...';
+        itemLookupCurrentData = null;
+        return;
+    }
+
+    if (!salesProcessed) {
+        if (hintEl) hintEl.textContent = 'Sales data is still loading, please wait...';
+        return;
+    }
+
+    const q = searchVal.toLowerCase();
+    const matchedRows = salesProcessed.normalized.filter(r =>
+        r.itemCode.toLowerCase().includes(q) || r.itemDes.toLowerCase().includes(q)
+    );
+
+    if (matchedRows.length === 0) {
+        if (resultsDiv) resultsDiv.style.display = 'none';
+        if (emptyDiv) {
+            emptyDiv.style.display = 'flex';
+            const et = emptyDiv.querySelector('.itemlookup-empty-text');
+            if (et) et.textContent = `No items found matching "${searchVal}"`;
+        }
+        if (hintEl) hintEl.textContent = `No results for "${searchVal}"`;
+        itemLookupCurrentData = null;
+        return;
+    }
+
+    // Determine primary item code (most occurrences)
+    const codeCount = {};
+    matchedRows.forEach(r => { codeCount[r.itemCode] = (codeCount[r.itemCode] || 0) + 1; });
+    const primaryCode = Object.entries(codeCount).sort((a, b) => b[1] - a[1])[0][0];
+    const primaryDesc = matchedRows.find(r => r.itemCode === primaryCode && r.itemDes)?.itemDes || primaryCode;
+
+    // Get cost from Data1 (latest price per PC)
+    // Try 1: direct item_code match from buildItemLookupCostMap
+    let costInfo = itemLookupCostMap[primaryCode] || null;
+
+    // Try 2: if not found, search supplierMap (keyed by Master.Description2)
+    // supplierMap[desc2] = [{supplier, pricePC, priceCTN, date, itemCode, ...}]
+    if (!costInfo && typeof supplierMap !== 'undefined') {
+        // Look for entries in supplierMap where itemCode matches primaryCode
+        for (const [desc2, entries] of Object.entries(supplierMap)) {
+            const match = entries.find(e => (e.itemCode || '').toString().trim() === primaryCode);
+            if (match) {
+                // Found a match — now get the latest entry with pricePC > 0
+                const validEntries = entries.filter(e =>
+                    (e.itemCode || '').toString().trim() === primaryCode && e.pricePC > 0
+                );
+                if (validEntries.length > 0) {
+                    const sorted = validEntries.slice().sort((a, b) =>
+                        parseDateSafe(b.date) - parseDateSafe(a.date)
+                    );
+                    costInfo = { pricePC: sorted[0].pricePC, date: sorted[0].date };
+                    console.log('[ItemLookup] Cost found via supplierMap for', primaryCode, '→', costInfo);
+                }
+                break;
+            }
+        }
+    }
+
+    console.log('[ItemLookup] Search:', primaryCode, '| costInfo:', costInfo, '| costMapSize:', Object.keys(itemLookupCostMap).length);
+
+    // Extract raw rows for this item from salesRawData
+    let rawRowsForItem = [];
+    if (salesRawData.length > 0) {
+        const rHeaders = Object.keys(salesRawData[0]);
+        const rItemCodeKey = rHeaders.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) || rHeaders[1];
+        // Use Query1.Year - Copy column as the date display (contains actual date like DD-MM-YYYY)
+        const rDateKey = rHeaders.find(h => h.toLowerCase().includes('year') && h.toLowerCase().includes('copy')) || null;
+        const rCustKey = rHeaders.find(h => h.toLowerCase().includes('cust_name')) || rHeaders[7];
+        const rQtyKey = rHeaders.find(h => h.toLowerCase().includes('total_units')) || rHeaders[5];
+        const rPriceKey = rHeaders.find(h => h.toLowerCase().includes('unit_price')) || rHeaders[2];
+        const rMonthKey = rHeaders.find(h => h.toUpperCase() === 'MONTH') || rHeaders[11];
+        const rEntryKey = rHeaders.find(h => h.toLowerCase().includes('entry_no')) || rHeaders[0];
+        const rNetAmtKey = rHeaders.find(h => h.toLowerCase().includes('net_amt')) || rHeaders[6];
+
+        rawRowsForItem = salesRawData
+            .filter(row => (row[rItemCodeKey] || '').toString().trim() === primaryCode)
+            .map(row => {
+                const qty = parseFloat((row[rQtyKey] || '0').toString().replace(/,/g, '')) || 0;
+                const unitPrice = parseFloat((row[rPriceKey] || '0').toString().replace(/,/g, '')) || 0;
+                const rawRevenue = parseFloat((row[rNetAmtKey] || '0').toString().replace(/,/g, '')) || 0;
+                const month = parseInt((row[rMonthKey] || '0').toString()) || 0;
+                // dateStr from Query1.Year - Copy (e.g. "02-06-2026")
+                const dateStr = rDateKey ? (row[rDateKey] || '').toString().trim() : '';
+
+                // Parse year and build yearMonth
+                const parsedDate = parseDateSafe(dateStr);
+                const year = (parsedDate.getTime() > 0) ? parsedDate.getFullYear() : (parseInt(dateStr) || 0);
+                const yearMonth = year && month ? `${year}-${month}` : '';
+
+                return {
+                    customer: (row[rCustKey] || '').toString().trim(),
+                    date: dateStr,           // full date string from Query1.Year - Copy
+                    month,
+                    qty,
+                    unitPrice,
+                    revenue: rawRevenue || (qty * unitPrice),
+                    entryNo: (row[rEntryKey] || '').toString().trim(),
+                    yearMonth
+                };
+            })
+            .filter(r => r.customer && r.qty > 0);
+    }
+
+    // Fallback to processed rows (no date available)
+    if (rawRowsForItem.length === 0) {
+        rawRowsForItem = matchedRows
+            .filter(r => r.itemCode === primaryCode)
+            .map(r => ({
+                customer: r.customer,
+                date: '',
+                month: r.month || 0,
+                qty: r.totalUnits || r.qty || 0,
+                unitPrice: r.unitPrice || 0,
+                revenue: r.netAmt || 0,
+                entryNo: r.entryNo || '',
+                yearMonth: r.yearMonth || ''
+            }));
+    }
+
+    // KPIs
+    const uniqueCustomers = [...new Set(rawRowsForItem.map(r => r.customer))];
+    const totalQty = rawRowsForItem.reduce((s, r) => s + r.qty, 0);
+    const totalRevenue = rawRowsForItem.reduce((s, r) => s + r.revenue, 0);
+    const avgPrice = totalQty > 0 ? totalRevenue / totalQty : 0;
+    const totalTransactions = new Set(rawRowsForItem.map(r => r.entryNo).filter(Boolean)).size || rawRowsForItem.length;
+    const marginPct = (costInfo && costInfo.pricePC > 0 && avgPrice > 0)
+        ? ((avgPrice - costInfo.pricePC) / avgPrice) * 100
+        : null;
+
+    itemLookupCurrentData = { primaryCode, primaryDesc, costInfo, rows: rawRowsForItem, uniqueCustomers, totalQty, totalRevenue, avgPrice, totalTransactions, marginPct };
+
+    if (hintEl) hintEl.textContent = `Found ${rawRowsForItem.length} transactions for "${primaryCode}" — ${uniqueCustomers.length} customer(s)`;
+
+    if (emptyDiv) emptyDiv.style.display = 'none';
+    if (resultsDiv) resultsDiv.style.display = 'block';
+
+    renderItemLookupInfoCard();
+    renderItemLookupCharts();
+    renderItemLookupTable();
+}
+
+// --- Render Info Card + KPIs ---
+function renderItemLookupInfoCard() {
+    if (!itemLookupCurrentData) return;
+    const { primaryCode, primaryDesc, costInfo, uniqueCustomers, totalQty, totalRevenue, avgPrice, totalTransactions, marginPct } = itemLookupCurrentData;
+
+    setText('itemlookupInfoCode', primaryCode);
+    setText('itemlookupInfoName', primaryDesc || '—');
+
+    const costValEl = document.getElementById('itemlookupCostValue');
+    const costDateEl = document.getElementById('itemlookupCostDate');
+    if (costInfo && costInfo.pricePC > 0) {
+        if (costValEl) costValEl.textContent = formatSalesMoney(costInfo.pricePC);
+        if (costDateEl) costDateEl.textContent = costInfo.date ? `as of ${costInfo.date}` : 'Latest purchase';
+    } else {
+        if (costValEl) costValEl.textContent = 'N/A';
+        if (costDateEl) costDateEl.textContent = 'Not found in Data1';
+    }
+
+    animateCounter('ilkTotalCustomers', uniqueCustomers.length);
+    animateCounter('ilkTotalQty', totalQty);
+    setText('ilkTotalRevenue', formatSalesMoney(totalRevenue));
+    setText('ilkAvgPrice', formatSalesMoney(avgPrice));
+    animateCounter('ilkTransactions', totalTransactions);
+
+    const marginEl = document.getElementById('ilkMargin');
+    if (marginEl) {
+        if (marginPct !== null) {
+            marginEl.textContent = marginPct.toFixed(1) + '%';
+            marginEl.style.color = marginPct >= 20 ? 'var(--success)' : marginPct >= 0 ? 'var(--warning)' : 'var(--danger)';
+        } else {
+            marginEl.textContent = '—';
+            marginEl.style.color = '';
+        }
+    }
+}
+
+// --- Render Charts ---
+function renderItemLookupCharts() {
+    if (!itemLookupCurrentData) return;
+    const { rows } = itemLookupCurrentData;
+    const mutedColor = getComputedStyle(document.body).getPropertyValue('--text-muted').trim();
+
+    // Monthly Qty
+    const monthlyQty = {};
+    rows.forEach(r => {
+        const key = r.yearMonth;
+        if (!key) return;
+        monthlyQty[key] = (monthlyQty[key] || 0) + r.qty;
+    });
+    const sortedMonths = Object.keys(monthlyQty).sort((a, b) => monthSortKey(a) - monthSortKey(b));
+
+    renderChart('chartItemLookupMonthly', {
+        type: 'bar',
+        data: {
+            labels: sortedMonths.map(m => formatMonthLabel(m)),
+            datasets: [{
+                label: 'Qty Sold',
+                data: sortedMonths.map(m => monthlyQty[m] || 0),
+                backgroundColor: sortedMonths.map((_, i) => COLORS.palette[i % COLORS.palette.length] + '80'),
+                borderColor: sortedMonths.map((_, i) => COLORS.palette[i % COLORS.palette.length]),
+                borderWidth: 1.5, borderRadius: 6, borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => `Qty: ${formatNumber(ctx.parsed.y)}` } } },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, maxRotation: 45, font: { size: 10 } } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, callback: v => formatNumber(v) }, beginAtZero: true }
+            }
+        }
+    });
+
+    // Qty by Customer
+    const custQty = {};
+    rows.forEach(r => { custQty[r.customer] = (custQty[r.customer] || 0) + r.qty; });
+    const sortedCusts = Object.entries(custQty).sort((a, b) => b[1] - a[1]).slice(0, 12);
+
+    renderChart('chartItemLookupCustomers', {
+        type: 'doughnut',
+        data: {
+            labels: sortedCusts.map(c => truncate(c[0], 20)),
+            datasets: [{ data: sortedCusts.map(c => c[1]), backgroundColor: COLORS.palette.slice(0, 12).map(c => c + 'CC'), borderColor: COLORS.palette.slice(0, 12), borderWidth: 2, hoverOffset: 8 }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { color: mutedColor, padding: 10, font: { size: 11, family: 'Outfit' }, usePointStyle: true, pointStyleWidth: 10 } },
+                tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', padding: 12, cornerRadius: 8, callbacks: { label: ctx => ` ${ctx.label}: ${formatNumber(ctx.parsed)}` } }
+            },
+            cutout: '60%'
+        }
+    });
+}
+
+// --- Render Transactions Table ---
+function renderItemLookupTable() {
+    if (!itemLookupCurrentData) return;
+    const { rows, costInfo } = itemLookupCurrentData;
+    const custFilter = (document.getElementById('itemlookupCustFilter')?.value || '').toLowerCase();
+    const sortBy = document.getElementById('itemlookupSortBy')?.value || 'date_desc';
+    const latestCost = costInfo ? costInfo.pricePC : 0;
+    const isLatestMode = ilViewMode === 'latest';
+
+    // Update section title/subtitle dynamically
+    setText('itemlookupTableTitle', isLatestMode ? 'Latest Buying per Customer' : 'All Transactions');
+    setText('itemlookupTableSubtitle', isLatestMode
+        ? 'One record per customer — their most recent purchase of this item'
+        : 'Every sales record — sorted by date (newest first)'
+    );
+
+    // Base filter by customer name
+    let filtered = rows.slice();
+    if (custFilter) filtered = filtered.filter(r => r.customer.toLowerCase().includes(custFilter));
+
+    if (isLatestMode) {
+        // === LATEST PER CUSTOMER MODE ===
+        // For each customer, keep only the row with the latest date
+        const latestByCustomer = {};
+        filtered.forEach(r => {
+            const existing = latestByCustomer[r.customer];
+            if (!existing) {
+                latestByCustomer[r.customer] = r;
+            } else {
+                // Compare dates — keep the more recent one
+                const existingDate = parseDateSafe(existing.date);
+                const thisDate = parseDateSafe(r.date);
+                if (thisDate > existingDate) {
+                    latestByCustomer[r.customer] = r;
+                }
+            }
+        });
+        filtered = Object.values(latestByCustomer);
+    }
+
+    // Sort
+    switch (sortBy) {
+        case 'date_desc':    filtered.sort((a, b) => parseDateSafe(b.date) - parseDateSafe(a.date)); break;
+        case 'date_asc':     filtered.sort((a, b) => parseDateSafe(a.date) - parseDateSafe(b.date)); break;
+        case 'qty_desc':     filtered.sort((a, b) => b.qty - a.qty); break;
+        case 'price_desc':   filtered.sort((a, b) => b.unitPrice - a.unitPrice); break;
+        case 'customer_asc': filtered.sort((a, b) => a.customer.localeCompare(b.customer)); break;
+    }
+
+    setText('itemlookupTxnBadge', isLatestMode
+        ? `${filtered.length} customer${filtered.length !== 1 ? 's' : ''}`
+        : `${filtered.length} records`
+    );
+
+    const tbody = document.getElementById('itemlookupBody');
+    if (!tbody) return;
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">No transactions match your filters</td></tr>';
+        return;
+    }
+
+    // Compute "days ago" for latest mode
+    const today = new Date();
+
+    tbody.innerHTML = filtered.slice(0, 500).map((r, i) => {
+        const marginPct = (latestCost > 0 && r.unitPrice > 0)
+            ? ((r.unitPrice - latestCost) / r.unitPrice) * 100
+            : null;
+        const marginDisplay = marginPct !== null ? marginPct.toFixed(1) + '%' : '—';
+        const marginColor = marginPct !== null
+            ? (marginPct >= 20 ? 'var(--success)' : marginPct >= 0 ? 'var(--warning)' : 'var(--danger)')
+            : '';
+
+        const dateDisplay = r.date || '—';
+        const costDisplay = latestCost > 0
+            ? `<span style="color:var(--cyan);font-weight:600;">${formatSalesMoney(latestCost)}</span>`
+            : '<span style="color:var(--text-muted);">—</span>';
+
+        // In Latest mode: show how many days ago the purchase was
+        let dateCellHtml;
+        if (isLatestMode && r.date) {
+            const purchaseDate = parseDateSafe(r.date);
+            const daysAgo = purchaseDate.getTime() > 0
+                ? Math.floor((today - purchaseDate) / (1000 * 60 * 60 * 24))
+                : null;
+            const daysLabel = daysAgo !== null
+                ? (daysAgo === 0 ? 'Today' : daysAgo === 1 ? 'Yesterday' : `${daysAgo}d ago`)
+                : '';
+            const freshnessClass = daysAgo !== null && daysAgo <= 30 ? 'il-fresh' : daysAgo !== null && daysAgo <= 90 ? 'il-recent' : 'il-old';
+            dateCellHtml = `<div style="display:flex;flex-direction:column;gap:2px;">
+                <span style="font-size:12px;font-weight:500;white-space:nowrap;">${escapeHtml(dateDisplay)}</span>
+                ${daysLabel ? `<span class="il-days-badge ${freshnessClass}">${daysLabel}</span>` : ''}
+            </div>`;
+        } else {
+            dateCellHtml = `<span style="font-size:12px;font-weight:500;white-space:nowrap;">${escapeHtml(dateDisplay)}</span>`;
+        }
+
+        return `<tr class="itemlookup-row" style="--row-index: ${i}">
+            <td class="text-center" style="color:var(--text-muted);font-size:12px;">${i + 1}</td>
+            <td class="customer-name">${escapeHtml(r.customer)}</td>
+            <td>${dateCellHtml}</td>
+            <td class="text-right" style="font-weight:700;color:var(--accent-primary);">${formatNumber(r.qty)}</td>
+            <td class="text-right" style="color:var(--info);font-weight:600;">${r.unitPrice > 0 ? formatSalesMoney(r.unitPrice) : '—'}</td>
+            <td class="text-right" style="color:var(--warning);font-weight:600;">${formatSalesMoney(r.revenue)}</td>
+            <td class="text-right">${costDisplay}</td>
+            <td class="text-right" style="font-weight:700;color:${marginColor};">${marginDisplay}</td>
+        </tr>`;
+    }).join('');
 }
