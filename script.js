@@ -3045,6 +3045,8 @@ let itemLookupCurrentData = null;
 let itemLookupCostMap = {};
 let itemLookupTabInitialized = false;
 let ilViewMode = 'all'; // 'all' | 'latest'
+let itemLookupMatchedItems = []; // Array of { code, desc }
+let itemLookupSelectedCodes = []; // Array of string codes currently selected
 
 // --- Initialize Tab ---
 function initItemLookupTab() {
@@ -3071,6 +3073,27 @@ function initItemLookupTab() {
             });
         }
         buildItemLookupCostMap();
+        
+        // Wire up select all / none buttons for multi-brand selector
+        const selectAllBtn = document.getElementById('ilkSelectAllBtn');
+        const selectNoneBtn = document.getElementById('ilkSelectNoneBtn');
+        if (selectAllBtn) {
+            selectAllBtn.addEventListener('click', () => {
+                itemLookupSelectedCodes = itemLookupMatchedItems.map(item => item.code);
+                const checkboxes = document.querySelectorAll('.brand-checkbox-input');
+                checkboxes.forEach(cb => cb.checked = true);
+                processAndRenderItemLookup();
+            });
+        }
+        if (selectNoneBtn) {
+            selectNoneBtn.addEventListener('click', () => {
+                itemLookupSelectedCodes = [];
+                const checkboxes = document.querySelectorAll('.brand-checkbox-input');
+                checkboxes.forEach(cb => cb.checked = false);
+                processAndRenderItemLookup();
+            });
+        }
+        
         itemLookupTabInitialized = true;
     }
 }
@@ -3141,10 +3164,16 @@ function buildItemLookupCostMap() {
         const sorted = validEntries.slice().sort((a, b) =>
             parseDateSafe(b.dateStr) - parseDateSafe(a.dateStr)
         );
-        itemLookupCostMap[code] = {
+        const entry = {
             pricePC: sorted[0].pricePC,
             date: sorted[0].dateStr
         };
+        // Store under original code AND lowercased so lookups match regardless of case
+        itemLookupCostMap[code] = entry;
+        const codeLower = code.toLowerCase().trim();
+        if (codeLower !== code) {
+            itemLookupCostMap[codeLower] = entry;
+        }
     });
 
     console.log('[ItemLookup] Cost map built —', Object.keys(itemLookupCostMap).length, 'items with costs');
@@ -3186,14 +3215,17 @@ function parseDateSafe(str) {
 }
 
 // --- Main Search Runner ---
+// --- Main Search Runner ---
 function runItemLookup() {
     const searchVal = (document.getElementById('itemlookupSearchInput')?.value || '').trim();
     const resultsDiv = document.getElementById('itemlookupResults');
     const emptyDiv = document.getElementById('itemlookupEmpty');
     const hintEl = document.getElementById('itemlookupHint');
+    const brandSelectorCard = document.getElementById('itemlookupBrandSelectorCard');
 
     if (searchVal.length < 2) {
         if (resultsDiv) resultsDiv.style.display = 'none';
+        if (brandSelectorCard) brandSelectorCard.style.display = 'none';
         if (emptyDiv) {
             emptyDiv.style.display = 'flex';
             const et = emptyDiv.querySelector('.itemlookup-empty-text');
@@ -3216,6 +3248,7 @@ function runItemLookup() {
 
     if (matchedRows.length === 0) {
         if (resultsDiv) resultsDiv.style.display = 'none';
+        if (brandSelectorCard) brandSelectorCard.style.display = 'none';
         if (emptyDiv) {
             emptyDiv.style.display = 'flex';
             const et = emptyDiv.querySelector('.itemlookup-empty-text');
@@ -3226,47 +3259,166 @@ function runItemLookup() {
         return;
     }
 
-    // Determine primary item code (most occurrences)
-    const codeCount = {};
-    matchedRows.forEach(r => { codeCount[r.itemCode] = (codeCount[r.itemCode] || 0) + 1; });
-    const primaryCode = Object.entries(codeCount).sort((a, b) => b[1] - a[1])[0][0];
-    const primaryDesc = matchedRows.find(r => r.itemCode === primaryCode && r.itemDes)?.itemDes || primaryCode;
-
-    // Get cost from Data1 (latest price per PC)
-    // Try 1: direct item_code match from buildItemLookupCostMap
-    let costInfo = itemLookupCostMap[primaryCode] || null;
-
-    // Try 2: if not found, search supplierMap (keyed by Master.Description2)
-    // supplierMap[desc2] = [{supplier, pricePC, priceCTN, date, itemCode, ...}]
-    if (!costInfo && typeof supplierMap !== 'undefined') {
-        // Look for entries in supplierMap where itemCode matches primaryCode
-        for (const [desc2, entries] of Object.entries(supplierMap)) {
-            const match = entries.find(e => (e.itemCode || '').toString().trim() === primaryCode);
-            if (match) {
-                // Found a match — now get the latest entry with pricePC > 0
-                const validEntries = entries.filter(e =>
-                    (e.itemCode || '').toString().trim() === primaryCode && e.pricePC > 0
-                );
-                if (validEntries.length > 0) {
-                    const sorted = validEntries.slice().sort((a, b) =>
-                        parseDateSafe(b.date) - parseDateSafe(a.date)
-                    );
-                    costInfo = { pricePC: sorted[0].pricePC, date: sorted[0].date };
-                    console.log('[ItemLookup] Cost found via supplierMap for', primaryCode, '→', costInfo);
-                }
-                break;
-            }
+    // Build the list of unique matched items
+    const itemMap = {};
+    matchedRows.forEach(r => {
+        const code = r.itemCode.trim();
+        if (code && !itemMap[code]) {
+            itemMap[code] = r.itemDes ? r.itemDes.trim() : code;
         }
+    });
+
+    itemLookupMatchedItems = Object.entries(itemMap).map(([code, desc]) => ({ code, desc }));
+    // Default to having all matched items selected
+    itemLookupSelectedCodes = itemLookupMatchedItems.map(item => item.code);
+
+    // Render the checkbox selector grid
+    renderMatchedItemsSelector();
+
+    // Process and render the stats/table/charts
+    processAndRenderItemLookup();
+}
+
+// --- Render Checkboxes Selector ---
+function renderMatchedItemsSelector() {
+    const cardEl = document.getElementById('itemlookupBrandSelectorCard');
+    const gridEl = document.getElementById('itemlookupBrandGrid');
+    if (!cardEl || !gridEl) return;
+
+    if (itemLookupMatchedItems.length <= 1) {
+        cardEl.style.display = 'none';
+        return;
     }
 
-    console.log('[ItemLookup] Search:', primaryCode, '| costInfo:', costInfo, '| costMapSize:', Object.keys(itemLookupCostMap).length);
+    cardEl.style.display = 'block';
 
-    // Extract raw rows for this item from salesRawData
+    gridEl.innerHTML = itemLookupMatchedItems.map(item => {
+        const isChecked = itemLookupSelectedCodes.includes(item.code);
+        const costInfo = itemLookupCostMap[item.code] || null;
+        const costDisplay = costInfo && costInfo.pricePC > 0
+            ? formatSalesMoney(costInfo.pricePC)
+            : 'Cost N/A';
+
+        return `
+            <label class="brand-checkbox-label">
+                <input 
+                    type="checkbox" 
+                    class="brand-checkbox-input" 
+                    value="${escapeHtml(item.code)}"
+                    ${isChecked ? 'checked' : ''}
+                >
+                <div class="brand-checkbox-text">
+                    <span class="brand-name" title="${escapeHtml(item.desc)}">${escapeHtml(item.desc)}</span>
+                    <div class="brand-meta">
+                        <span class="brand-code">${escapeHtml(item.code)}</span>
+                        <span class="brand-sep">|</span>
+                        <span class="brand-cost">${costDisplay}</span>
+                    </div>
+                </div>
+            </label>
+        `;
+    }).join('');
+
+    // Add event listeners to checkboxes
+    gridEl.querySelectorAll('.brand-checkbox-input').forEach(checkbox => {
+        checkbox.addEventListener('change', () => {
+            const checkedBoxes = gridEl.querySelectorAll('.brand-checkbox-input:checked');
+            itemLookupSelectedCodes = Array.from(checkedBoxes).map(cb => cb.value);
+            processAndRenderItemLookup();
+        });
+    });
+}
+
+// --- Process selection, compute metrics, and render ---
+function processAndRenderItemLookup() {
+    const resultsDiv = document.getElementById('itemlookupResults');
+    const emptyDiv = document.getElementById('itemlookupEmpty');
+    const hintEl = document.getElementById('itemlookupHint');
+
+    if (itemLookupSelectedCodes.length === 0) {
+        // Clear card info / show no items selected
+        setText('itemlookupInfoCode', 'No Items Selected');
+        setText('itemlookupInfoName', 'Please select at least one brand/size above.');
+        const costValEl = document.getElementById('itemlookupCostValue');
+        const costDateEl = document.getElementById('itemlookupCostDate');
+        if (costValEl) costValEl.textContent = '—';
+        if (costDateEl) costDateEl.textContent = '';
+
+        setText('ilkTotalCustomers', '0');
+        setText('ilkTotalQty', '0');
+        setText('ilkTotalRevenue', formatSalesMoney(0));
+        setText('ilkAvgPrice', formatSalesMoney(0));
+        setText('ilkTransactions', '0');
+        const marginEl = document.getElementById('ilkMargin');
+        if (marginEl) { marginEl.textContent = '—'; marginEl.style.color = ''; }
+
+        const tbody = document.getElementById('itemlookupBody');
+        if (tbody) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">No brands selected</td></tr>';
+        }
+        setText('itemlookupTxnBadge', '0 records');
+
+        if (hintEl) hintEl.textContent = 'Select at least one brand/size to display results.';
+        
+        // Render blank charts
+        itemLookupCurrentData = {
+            selectedCodes: [],
+            selectedCosts: {},
+            avgCostPrice: 0,
+            rows: [],
+            uniqueCustomers: [],
+            totalQty: 0,
+            totalRevenue: 0,
+            avgPrice: 0,
+            totalTransactions: 0,
+            markupPct: null
+        };
+        renderItemLookupCharts();
+        return;
+    }
+
+    // Resolve latest costs for all selected codes
+    // Build a case-insensitive lookup map from itemLookupCostMap
+    const costMapNormalized = {};
+    Object.entries(itemLookupCostMap).forEach(([k, v]) => {
+        costMapNormalized[k.toLowerCase().trim()] = v;
+    });
+
+    const selectedCosts = {};
+    itemLookupSelectedCodes.forEach(code => {
+        const codeNorm = code.toLowerCase().trim();
+        // Try direct match first, then case-insensitive
+        let costInfo = itemLookupCostMap[code] || costMapNormalized[codeNorm] || null;
+
+        // Try supplierMap fallback
+        if (!costInfo && typeof supplierMap !== 'undefined') {
+            for (const [desc2, entries] of Object.entries(supplierMap)) {
+                const match = entries.find(e => (e.itemCode || '').toString().trim().toLowerCase() === codeNorm);
+                if (match) {
+                    const validEntries = entries.filter(e =>
+                        (e.itemCode || '').toString().trim().toLowerCase() === codeNorm && e.pricePC > 0
+                    );
+                    if (validEntries.length > 0) {
+                        const sorted = validEntries.slice().sort((a, b) => parseDateSafe(b.date) - parseDateSafe(a.date));
+                        costInfo = { pricePC: sorted[0].pricePC, date: sorted[0].date };
+                    }
+                    break;
+                }
+            }
+        }
+        if (costInfo) {
+            selectedCosts[code] = costInfo;
+            // Also store by normalized key so row-level lookup always finds it
+            selectedCosts[codeNorm] = costInfo;
+        }
+        console.log('[ItemLookup] Cost for', code, '→', costInfo ? costInfo.pricePC : 'NOT FOUND');
+    });
+
+    // Extract raw rows for all selected items from salesRawData
     let rawRowsForItem = [];
     if (salesRawData.length > 0) {
         const rHeaders = Object.keys(salesRawData[0]);
         const rItemCodeKey = rHeaders.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) || rHeaders[1];
-        // Use Query1.Year - Copy column as the date display (contains actual date like DD-MM-YYYY)
         const rDateKey = rHeaders.find(h => h.toLowerCase().includes('year') && h.toLowerCase().includes('copy')) || null;
         const rCustKey = rHeaders.find(h => h.toLowerCase().includes('cust_name')) || rHeaders[7];
         const rQtyKey = rHeaders.find(h => h.toLowerCase().includes('total_units')) || rHeaders[5];
@@ -3274,25 +3426,29 @@ function runItemLookup() {
         const rMonthKey = rHeaders.find(h => h.toUpperCase() === 'MONTH') || rHeaders[11];
         const rEntryKey = rHeaders.find(h => h.toLowerCase().includes('entry_no')) || rHeaders[0];
         const rNetAmtKey = rHeaders.find(h => h.toLowerCase().includes('net_amt')) || rHeaders[6];
+        const rItemDesKey = rHeaders.find(h => h.toLowerCase().includes('item_des')) || rHeaders[3];
 
         rawRowsForItem = salesRawData
-            .filter(row => (row[rItemCodeKey] || '').toString().trim() === primaryCode)
+            .filter(row => {
+                const code = (row[rItemCodeKey] || '').toString().trim();
+                return itemLookupSelectedCodes.includes(code);
+            })
             .map(row => {
                 const qty = parseFloat((row[rQtyKey] || '0').toString().replace(/,/g, '')) || 0;
                 const unitPrice = parseFloat((row[rPriceKey] || '0').toString().replace(/,/g, '')) || 0;
                 const rawRevenue = parseFloat((row[rNetAmtKey] || '0').toString().replace(/,/g, '')) || 0;
                 const month = parseInt((row[rMonthKey] || '0').toString()) || 0;
-                // dateStr from Query1.Year - Copy (e.g. "02-06-2026")
                 const dateStr = rDateKey ? (row[rDateKey] || '').toString().trim() : '';
 
-                // Parse year and build yearMonth
                 const parsedDate = parseDateSafe(dateStr);
                 const year = (parsedDate.getTime() > 0) ? parsedDate.getFullYear() : (parseInt(dateStr) || 0);
                 const yearMonth = year && month ? `${year}-${month}` : '';
 
                 return {
                     customer: (row[rCustKey] || '').toString().trim(),
-                    date: dateStr,           // full date string from Query1.Year - Copy
+                    itemCode: (row[rItemCodeKey] || '').toString().trim(),
+                    itemDes: rItemDesKey ? (row[rItemDesKey] || '').toString().trim() : '',
+                    date: dateStr,
                     month,
                     qty,
                     unitPrice,
@@ -3306,10 +3462,12 @@ function runItemLookup() {
 
     // Fallback to processed rows (no date available)
     if (rawRowsForItem.length === 0) {
-        rawRowsForItem = matchedRows
-            .filter(r => r.itemCode === primaryCode)
+        rawRowsForItem = salesProcessed.normalized
+            .filter(r => itemLookupSelectedCodes.includes(r.itemCode))
             .map(r => ({
                 customer: r.customer,
+                itemCode: r.itemCode,
+                itemDes: r.itemDes || '',
                 date: '',
                 month: r.month || 0,
                 qty: r.totalUnits || r.qty || 0,
@@ -3320,19 +3478,71 @@ function runItemLookup() {
             }));
     }
 
-    // KPIs
+    // Combined KPIs
     const uniqueCustomers = [...new Set(rawRowsForItem.map(r => r.customer))];
     const totalQty = rawRowsForItem.reduce((s, r) => s + r.qty, 0);
     const totalRevenue = rawRowsForItem.reduce((s, r) => s + r.revenue, 0);
     const avgPrice = totalQty > 0 ? totalRevenue / totalQty : 0;
     const totalTransactions = new Set(rawRowsForItem.map(r => r.entryNo).filter(Boolean)).size || rawRowsForItem.length;
-    const marginPct = (costInfo && costInfo.pricePC > 0 && avgPrice > 0)
-        ? ((avgPrice - costInfo.pricePC) / avgPrice) * 100
+
+    // Compute weighted average cost of selected items (use original code list, not normalized map keys)
+    let totalCostValue = 0;
+    let totalCostQty = 0;
+    itemLookupSelectedCodes.forEach(code => {
+        const codeNorm = code.toLowerCase().trim();
+        const costEntry = selectedCosts[code] || selectedCosts[codeNorm] || null;
+        const cost = costEntry ? costEntry.pricePC : 0;
+        if (cost > 0) {
+            const itemQty = rawRowsForItem.filter(r => {
+                const rc = (r.itemCode || '').toLowerCase().trim();
+                return rc === codeNorm || r.itemCode === code;
+            }).reduce((s, r) => s + r.qty, 0);
+            totalCostValue += cost * itemQty;
+            totalCostQty += itemQty;
+        }
+    });
+
+    let avgCostPrice = 0;
+    if (totalCostQty > 0) {
+        avgCostPrice = totalCostValue / totalCostQty;
+    } else {
+        // Fallback: simple average of unique costs (one per original selected code)
+        const uniqueCosts = itemLookupSelectedCodes
+            .map(code => {
+                const c = selectedCosts[code] || selectedCosts[code.toLowerCase().trim()];
+                return c ? c.pricePC : 0;
+            })
+            .filter(c => c > 0);
+        if (uniqueCosts.length > 0) {
+            avgCostPrice = uniqueCosts.reduce((s, c) => s + c, 0) / uniqueCosts.length;
+        }
+    }
+
+    // Est. Markup = (avgPrice - cost) / cost * 100
+    const markupPct = (avgCostPrice > 0 && avgPrice > 0)
+        ? ((avgPrice - avgCostPrice) / avgCostPrice) * 100
         : null;
 
-    itemLookupCurrentData = { primaryCode, primaryDesc, costInfo, rows: rawRowsForItem, uniqueCustomers, totalQty, totalRevenue, avgPrice, totalTransactions, marginPct };
+    itemLookupCurrentData = {
+        selectedCodes: itemLookupSelectedCodes,
+        selectedCosts,
+        avgCostPrice,
+        rows: rawRowsForItem,
+        uniqueCustomers,
+        totalQty,
+        totalRevenue,
+        avgPrice,
+        totalTransactions,
+        markupPct
+    };
 
-    if (hintEl) hintEl.textContent = `Found ${rawRowsForItem.length} transactions for "${primaryCode}" — ${uniqueCustomers.length} customer(s)`;
+    if (hintEl) {
+        if (itemLookupSelectedCodes.length === 1) {
+            hintEl.textContent = `Found ${rawRowsForItem.length} transactions for "${itemLookupSelectedCodes[0]}" — ${uniqueCustomers.length} customer(s)`;
+        } else {
+            hintEl.textContent = `Combined ${itemLookupSelectedCodes.length} items: found ${rawRowsForItem.length} transactions — ${uniqueCustomers.length} customer(s)`;
+        }
+    }
 
     if (emptyDiv) emptyDiv.style.display = 'none';
     if (resultsDiv) resultsDiv.style.display = 'block';
@@ -3345,16 +3555,41 @@ function runItemLookup() {
 // --- Render Info Card + KPIs ---
 function renderItemLookupInfoCard() {
     if (!itemLookupCurrentData) return;
-    const { primaryCode, primaryDesc, costInfo, uniqueCustomers, totalQty, totalRevenue, avgPrice, totalTransactions, marginPct } = itemLookupCurrentData;
+    const { selectedCodes, selectedCosts, avgCostPrice, uniqueCustomers, totalQty, totalRevenue, avgPrice, totalTransactions, markupPct } = itemLookupCurrentData;
 
-    setText('itemlookupInfoCode', primaryCode);
-    setText('itemlookupInfoName', primaryDesc || '—');
+    let codeText = '';
+    let nameText = '';
+    if (selectedCodes.length === 1) {
+        codeText = selectedCodes[0];
+        const matched = itemLookupMatchedItems.find(item => item.code === selectedCodes[0]);
+        nameText = matched ? matched.desc : '—';
+    } else {
+        codeText = `${selectedCodes.length} Items Selected`;
+        nameText = selectedCodes.map(code => {
+            const matched = itemLookupMatchedItems.find(item => item.code === code);
+            return matched ? matched.desc : code;
+        }).join(' + ');
+        if (nameText.length > 120) {
+            nameText = nameText.substring(0, 117) + '...';
+        }
+    }
+
+    setText('itemlookupInfoCode', codeText);
+    setText('itemlookupInfoName', nameText || '—');
 
     const costValEl = document.getElementById('itemlookupCostValue');
     const costDateEl = document.getElementById('itemlookupCostDate');
-    if (costInfo && costInfo.pricePC > 0) {
-        if (costValEl) costValEl.textContent = formatSalesMoney(costInfo.pricePC);
-        if (costDateEl) costDateEl.textContent = costInfo.date ? `as of ${costInfo.date}` : 'Latest purchase';
+    if (avgCostPrice > 0) {
+        if (costValEl) costValEl.textContent = formatSalesMoney(avgCostPrice);
+        if (costDateEl) {
+            if (selectedCodes.length === 1) {
+                const code = selectedCodes[0];
+                const costInfo = selectedCosts[code];
+                costDateEl.textContent = (costInfo && costInfo.date) ? `as of ${costInfo.date}` : 'Latest purchase';
+            } else {
+                costDateEl.textContent = 'Weighted average cost';
+            }
+        }
     } else {
         if (costValEl) costValEl.textContent = 'N/A';
         if (costDateEl) costDateEl.textContent = 'Not found in Data1';
@@ -3366,14 +3601,15 @@ function renderItemLookupInfoCard() {
     setText('ilkAvgPrice', formatSalesMoney(avgPrice));
     animateCounter('ilkTransactions', totalTransactions);
 
-    const marginEl = document.getElementById('ilkMargin');
-    if (marginEl) {
-        if (marginPct !== null) {
-            marginEl.textContent = marginPct.toFixed(1) + '%';
-            marginEl.style.color = marginPct >= 20 ? 'var(--success)' : marginPct >= 0 ? 'var(--warning)' : 'var(--danger)';
+    const markupEl = document.getElementById('ilkMargin');
+    if (markupEl) {
+        if (markupPct !== null) {
+            markupEl.textContent = markupPct.toFixed(1) + '%';
+            // Markup thresholds: >=25% good, >=0% warning, <0% loss
+            markupEl.style.color = markupPct >= 25 ? 'var(--success)' : markupPct >= 0 ? 'var(--warning)' : 'var(--danger)';
         } else {
-            marginEl.textContent = '—';
-            marginEl.style.color = '';
+            markupEl.textContent = '—';
+            markupEl.style.color = '';
         }
     }
 }
@@ -3440,10 +3676,9 @@ function renderItemLookupCharts() {
 // --- Render Transactions Table ---
 function renderItemLookupTable() {
     if (!itemLookupCurrentData) return;
-    const { rows, costInfo } = itemLookupCurrentData;
+    const { rows, selectedCosts, selectedCodes, avgCostPrice } = itemLookupCurrentData;
     const custFilter = (document.getElementById('itemlookupCustFilter')?.value || '').toLowerCase();
     const sortBy = document.getElementById('itemlookupSortBy')?.value || 'date_desc';
-    const latestCost = costInfo ? costInfo.pricePC : 0;
     const isLatestMode = ilViewMode === 'latest';
 
     // Update section title/subtitle dynamically
@@ -3503,17 +3738,21 @@ function renderItemLookupTable() {
     const today = new Date();
 
     tbody.innerHTML = filtered.slice(0, 500).map((r, i) => {
-        const marginPct = (latestCost > 0 && r.unitPrice > 0)
-            ? ((r.unitPrice - latestCost) / r.unitPrice) * 100
+        // Apply latest cost uniformly to ALL rows (not per-row — user requested this)
+        const rowCost = avgCostPrice > 0 ? avgCostPrice : 0;
+
+        // Est. Markup = (selling price - cost) / cost * 100
+        const markupPct = (rowCost > 0 && r.unitPrice > 0)
+            ? ((r.unitPrice - rowCost) / rowCost) * 100
             : null;
-        const marginDisplay = marginPct !== null ? marginPct.toFixed(1) + '%' : '—';
-        const marginColor = marginPct !== null
-            ? (marginPct >= 20 ? 'var(--success)' : marginPct >= 0 ? 'var(--warning)' : 'var(--danger)')
+        const markupDisplay = markupPct !== null ? markupPct.toFixed(1) + '%' : '—';
+        const markupColor = markupPct !== null
+            ? (markupPct >= 25 ? 'var(--success)' : markupPct >= 0 ? 'var(--warning)' : 'var(--danger)')
             : '';
 
         const dateDisplay = r.date || '—';
-        const costDisplay = latestCost > 0
-            ? `<span style="color:var(--cyan);font-weight:600;">${formatSalesMoney(latestCost)}</span>`
+        const costDisplay = rowCost > 0
+            ? `<span style="color:var(--cyan);font-weight:600;">${formatSalesMoney(rowCost)}</span>`
             : '<span style="color:var(--text-muted);">—</span>';
 
         // In Latest mode: show how many days ago the purchase was
@@ -3535,15 +3774,23 @@ function renderItemLookupTable() {
             dateCellHtml = `<span style="font-size:12px;font-weight:500;white-space:nowrap;">${escapeHtml(dateDisplay)}</span>`;
         }
 
+        const isMultiItem = selectedCodes && selectedCodes.length > 1;
+        const itemSubtextHtml = isMultiItem
+            ? `<div style="font-size:11px;color:var(--text-secondary);font-weight:500;margin-top:4px;background:rgba(255,255,255,0.03);padding:2px 6px;border-radius:4px;display:inline-block;border:1px solid rgba(255,255,255,0.02);">${escapeHtml(r.itemDes || r.itemCode)}</div>`
+            : '';
+
         return `<tr class="itemlookup-row" style="--row-index: ${i}">
             <td class="text-center" style="color:var(--text-muted);font-size:12px;">${i + 1}</td>
-            <td class="customer-name">${escapeHtml(r.customer)}</td>
+            <td class="customer-name">
+                <div style="font-weight:600;">${escapeHtml(r.customer)}</div>
+                ${itemSubtextHtml}
+            </td>
             <td>${dateCellHtml}</td>
             <td class="text-right" style="font-weight:700;color:var(--accent-primary);">${formatNumber(r.qty)}</td>
             <td class="text-right" style="color:var(--info);font-weight:600;">${r.unitPrice > 0 ? formatSalesMoney(r.unitPrice) : '—'}</td>
             <td class="text-right" style="color:var(--warning);font-weight:600;">${formatSalesMoney(r.revenue)}</td>
             <td class="text-right">${costDisplay}</td>
-            <td class="text-right" style="font-weight:700;color:${marginColor};">${marginDisplay}</td>
+            <td class="text-right" style="font-weight:700;color:${markupColor};">${markupDisplay}</td>
         </tr>`;
     }).join('');
 }
