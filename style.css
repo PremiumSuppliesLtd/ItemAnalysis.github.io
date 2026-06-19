@@ -2618,3 +2618,146 @@ body::before {
     background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
 }
 
+/* --- Item Lookup Brand Selector Card --- */
+.itemlookup-brand-selector-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 18px 24px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow-md);
+    animation: cardPop 0.4s ease-out;
+    position: relative;
+    overflow: hidden;
+}
+
+.itemlookup-brand-selector-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--cyan), var(--accent-secondary), var(--accent-primary));
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.brand-selector-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 10px;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.brand-selector-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.brand-selector-icon {
+    font-size: 16px;
+}
+
+.brand-selector-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.brand-action-btn {
+    background: none;
+    border: none;
+    color: var(--accent-primary);
+    cursor: pointer;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: var(--transition);
+    font-family: inherit;
+}
+
+.brand-action-btn:hover {
+    color: var(--accent-secondary);
+    background: var(--accent-glow);
+}
+
+.brand-action-sep {
+    color: var(--border-color);
+}
+
+.brand-checkbox-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+}
+
+.brand-checkbox-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: var(--transition);
+    user-select: none;
+}
+
+.brand-checkbox-label:hover {
+    border-color: rgba(99, 102, 241, 0.4);
+    background: var(--bg-card-hover);
+}
+
+.brand-checkbox-input {
+    margin-top: 3px;
+    accent-color: var(--accent-primary);
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+}
+
+.brand-checkbox-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.brand-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.brand-meta {
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: flex;
+    gap: 8px;
+}
+
+.brand-code {
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+}
+
+.brand-cost {
+    color: var(--success);
+    font-weight: 600;
+}
+
+
