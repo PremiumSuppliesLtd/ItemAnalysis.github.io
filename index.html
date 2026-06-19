@@ -1199,6 +1199,24 @@
             <!-- Results Section -->
             <div id="itemlookupResults" style="display:none;">
 
+                <!-- Brand / Size Selector Card -->
+                <div class="itemlookup-brand-selector-card" id="itemlookupBrandSelectorCard" style="display:none;">
+                    <div class="brand-selector-header">
+                        <div class="brand-selector-title">
+                            <span class="brand-selector-icon">🏷️</span>
+                            <span>Multiple Brands/Sizes Found</span>
+                        </div>
+                        <div class="brand-selector-actions">
+                            <button class="brand-action-btn" id="ilkSelectAllBtn">Select All</button>
+                            <span class="brand-action-sep">|</span>
+                            <button class="brand-action-btn" id="ilkSelectNoneBtn">Clear All</button>
+                        </div>
+                    </div>
+                    <div class="brand-checkbox-grid" id="itemlookupBrandGrid">
+                        <!-- Dynamic checkboxes -->
+                    </div>
+                </div>
+
                 <!-- Item Info Card -->
                 <div class="itemlookup-info-card" id="itemlookupInfoCard">
                     <div class="itemlookup-info-card-inner">
@@ -1238,7 +1256,7 @@
                         </div>
                         <div class="itemlookup-kpi">
                             <div class="itemlookup-kpi-value" id="ilkMargin">—</div>
-                            <div class="itemlookup-kpi-label">Est. Margin</div>
+                            <div class="itemlookup-kpi-label">Est. Markup</div>
                         </div>
                     </div>
                 </div>
@@ -1319,7 +1337,7 @@
                                     <th class="text-right">Unit Price</th>
                                     <th class="text-right">Revenue</th>
                                     <th class="text-right">Latest Cost/PC</th>
-                                    <th class="text-right">Est. Margin</th>
+                                    <th class="text-right">Est. Markup</th>
                                 </tr>
                             </thead>
                             <tbody id="itemlookupBody">
