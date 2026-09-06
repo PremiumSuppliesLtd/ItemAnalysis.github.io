@@ -232,6 +232,32 @@ function initEventListeners() {
             renderItemLookupTable();
         });
     });
+
+    // Margin Check
+    const mcRunBtn = document.getElementById('margincheckRunBtn');
+    if (mcRunBtn) mcRunBtn.addEventListener('click', runMarginCheck);
+    const mcThreshold = document.getElementById('margincheckThresholdInput');
+    if (mcThreshold) mcThreshold.addEventListener('keypress', e => { if (e.key === 'Enter') runMarginCheck(); });
+    const mcItemFilter = document.getElementById('margincheckItemFilter');
+    if (mcItemFilter) mcItemFilter.addEventListener('input', debounce(renderMarginCheckTable, 300));
+    const mcCustFilter = document.getElementById('margincheckCustFilter');
+    if (mcCustFilter) mcCustFilter.addEventListener('input', debounce(renderMarginCheckTable, 300));
+    const mcShowFilter = document.getElementById('margincheckShowFilter');
+    if (mcShowFilter) mcShowFilter.addEventListener('change', renderMarginCheckTable);
+    const mcSortBy = document.getElementById('margincheckSortBy');
+    if (mcSortBy) mcSortBy.addEventListener('change', renderMarginCheckTable);
+    // Margin Check view toggle
+    document.querySelectorAll('[data-mcview]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('[data-mcview]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            mcViewMode = btn.dataset.mcview || 'all';
+            renderMarginCheckTable();
+        });
+    });
+
+    // Supplier Smart Reorder listeners
+    initSupplierReorderListeners();
 }
 
 // ===== DATA FETCHING =====
@@ -529,7 +555,7 @@ function populateSelect(id, options, defaultValue, defaultLabel) {
 
 // ===== RENDER ROUTER =====
 function renderCurrentTab() {
-    if (rawData.length === 0 && currentTab !== 'salesintel' && currentTab !== 'itemlookup') return;
+    if (rawData.length === 0 && currentTab !== 'salesintel' && currentTab !== 'itemlookup' && currentTab !== 'margincheck' && currentTab !== 'supplier-reorder') return;
     switch (currentTab) {
         case 'overview': renderOverview(); break;
         case 'dropped': renderDropped(); break;
@@ -539,8 +565,10 @@ function renderCurrentTab() {
         case 'trends': renderTrends(); break;
         case 'deepdive': /* Wait for user action */ break;
         case 'reorder': renderReorder(); break;
+        case 'supplier-reorder': initSupplierReorderTab(); break;
         case 'salesintel': renderSalesIntel(); break;
         case 'itemlookup': initItemLookupTab(); break;
+        case 'margincheck': initMarginCheckTab(); break;
     }
 }
 
@@ -1318,13 +1346,19 @@ async function fetchReorderData() {
     }
 
     try {
-        // Fetch both spreadsheets in parallel (each is a separate Google Spreadsheet)
+        // Fetch both spreadsheets in parallel:
+        // Try fetching ITEM_REORDER sheet from Reorder spreadsheet for exact item_code and current stock
+        const itemReorderUrl = reorderUrl + (reorderUrl.includes('sheet=') ? '' : (reorderUrl.includes('?') ? '&' : '?') + 'sheet=ITEM_REORDER');
         const [reorderRes, purchaseRes] = await Promise.all([
-            fetch(reorderUrl),
+            fetch(itemReorderUrl).catch(() => fetch(reorderUrl)),
             fetch(data1Url)
         ]);
 
-        const reorderResult = await reorderRes.json();
+        let reorderResult = await reorderRes.json().catch(() => ({ status: 'error' }));
+        if (reorderResult.status !== 'success') {
+            const fallbackRes = await fetch(reorderUrl);
+            reorderResult = await fallbackRes.json();
+        }
         const purchaseResult = await purchaseRes.json();
 
         if (reorderResult.status === 'success') {
@@ -1335,10 +1369,13 @@ async function fetchReorderData() {
         }
 
         processReorderData();
+        checkAndProcessSupplierReorder();
 
         // If currently on reorder tab, render it
         if (currentTab === 'reorder') {
             renderReorder();
+        } else if (currentTab === 'supplier-reorder') {
+            renderSupplierSmartReorder();
         }
     } catch (err) {
         console.error('Error fetching reorder data:', err);
@@ -1922,6 +1959,7 @@ async function fetchSalesData() {
 
         salesDataFetched = true;
         processSalesData();
+        checkAndProcessSupplierReorder();
 
         // Populate customer dropdown for Customer Analysis
         if (salesProcessed) {
@@ -1930,6 +1968,8 @@ async function fetchSalesData() {
 
         if (currentTab === 'salesintel') {
             renderSalesIntel();
+        } else if (currentTab === 'supplier-reorder') {
+            renderSupplierSmartReorder();
         }
     } catch (err) {
         console.error('Error fetching sales data:', err);
@@ -3794,3 +3834,2105 @@ function renderItemLookupTable() {
         </tr>`;
     }).join('');
 }
+
+
+// =========================================================
+// MARGIN CHECK MODULE
+// =========================================================
+
+let mcCurrentData = null;   // Array of enriched rows with markup
+let mcThreshold = null;     // Numeric threshold in %
+let mcViewMode = 'all';     // 'all' | 'byitem' | 'bycustomer'
+let mcTabInitialized = false;
+
+// --- Initialize Tab ---
+function initMarginCheckTab() {
+    // Build cost map if not already done (reuses itemLookupCostMap)
+    if (salesProcessed && !mcTabInitialized) {
+        if (Object.keys(itemLookupCostMap).length === 0) {
+            buildItemLookupCostMap();
+        }
+        mcTabInitialized = true;
+    }
+    // Show empty state on first visit
+    const resultsDiv = document.getElementById('margincheckResults');
+    const emptyDiv = document.getElementById('margincheckEmpty');
+    if (!mcCurrentData) {
+        if (resultsDiv) resultsDiv.style.display = 'none';
+        if (emptyDiv) emptyDiv.style.display = 'flex';
+    }
+}
+
+// --- Main Analysis Runner ---
+function runMarginCheck() {
+    const thresholdEl = document.getElementById('margincheckThresholdInput');
+    const hintEl = document.getElementById('margincheckHint');
+    const resultsDiv = document.getElementById('margincheckResults');
+    const emptyDiv = document.getElementById('margincheckEmpty');
+    const inputBox = document.getElementById('margincheckInputBox');
+
+    const rawVal = (thresholdEl?.value || '').trim();
+    if (rawVal === '' || isNaN(parseFloat(rawVal))) {
+        if (hintEl) hintEl.textContent = '⚠️ Please enter a valid markup % (e.g. 15)';
+        if (inputBox) { inputBox.classList.add('mc-input-error'); setTimeout(() => inputBox.classList.remove('mc-input-error'), 600); }
+        return;
+    }
+    mcThreshold = parseFloat(rawVal);
+
+    if (!salesProcessed) {
+        if (hintEl) hintEl.textContent = 'Sales data is still loading — please wait a moment and try again.';
+        return;
+    }
+
+    // Ensure cost map is built
+    if (Object.keys(itemLookupCostMap).length === 0) {
+        buildItemLookupCostMap();
+    }
+
+    if (hintEl) hintEl.textContent = `Scanning transactions for markup ≤ ${mcThreshold.toFixed(1)}%...`;
+
+    // Build cost-normalised lookup (case-insensitive)
+    const costMapNorm = {};
+    Object.entries(itemLookupCostMap).forEach(([k, v]) => {
+        costMapNorm[k.toLowerCase().trim()] = v;
+    });
+
+    // Enrich raw rows with cost & markup
+    let enriched = [];
+    if (salesRawData.length > 0) {
+        const rHeaders = Object.keys(salesRawData[0]);
+        const rItemCodeKey = rHeaders.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) || rHeaders[1];
+        const rItemDesKey  = rHeaders.find(h => h.toLowerCase().includes('item_des')) || rHeaders[3];
+        const rCustKey     = rHeaders.find(h => h.toLowerCase().includes('cust_name')) || rHeaders[7];
+        const rQtyKey      = rHeaders.find(h => h.toLowerCase().includes('total_units')) || rHeaders[5];
+        const rPriceKey    = rHeaders.find(h => h.toLowerCase().includes('unit_price')) || rHeaders[2];
+        const rNetAmtKey   = rHeaders.find(h => h.toLowerCase().includes('net_amt')) || rHeaders[6];
+        const rMonthKey    = rHeaders.find(h => h.toUpperCase() === 'MONTH') || rHeaders[11];
+        const rDateKey     = rHeaders.find(h => h.toLowerCase().includes('year') && h.toLowerCase().includes('copy')) || null;
+        const rEntryKey    = rHeaders.find(h => h.toLowerCase().includes('entry_no')) || rHeaders[0];
+
+        salesRawData.forEach(row => {
+            const itemCode = (row[rItemCodeKey] || '').toString().trim();
+            if (!itemCode) return;
+            const customer  = (row[rCustKey] || '').toString().trim();
+            if (!customer) return;
+            const qty       = parseFloat((row[rQtyKey]    || '0').toString().replace(/,/g,'')) || 0;
+            if (qty <= 0) return;
+            const unitPrice = parseFloat((row[rPriceKey]  || '0').toString().replace(/,/g,'')) || 0;
+            if (unitPrice <= 0) return;
+            const rawRevenue = parseFloat((row[rNetAmtKey] || '0').toString().replace(/,/g,'')) || 0;
+            const revenue   = rawRevenue || (qty * unitPrice);
+            const month     = parseInt((row[rMonthKey] || '0').toString()) || 0;
+            const dateStr   = rDateKey ? (row[rDateKey] || '').toString().trim() : '';
+            const itemDes   = (row[rItemDesKey] || '').toString().trim();
+            const entryNo   = (row[rEntryKey] || '').toString().trim();
+
+            const parsedDate = parseDateSafe(dateStr);
+            const year = parsedDate.getTime() > 0 ? parsedDate.getFullYear() : 0;
+            const yearMonth = year && month ? `${year}-${month}` : '';
+
+            // Get cost
+            const codeNorm = itemCode.toLowerCase().trim();
+            const costEntry = itemLookupCostMap[itemCode] || costMapNorm[codeNorm] || null;
+            const costPrice = costEntry ? costEntry.pricePC : 0;
+
+            // Markup = (price - cost) / cost * 100
+            const markupPct = (costPrice > 0 && unitPrice > 0)
+                ? ((unitPrice - costPrice) / costPrice) * 100
+                : null;
+
+            // Only include if markup is known AND <= threshold
+            if (markupPct !== null && markupPct <= mcThreshold) {
+                enriched.push({
+                    itemCode,
+                    itemDes,
+                    customer,
+                    date: dateStr,
+                    qty,
+                    unitPrice,
+                    costPrice,
+                    revenue,
+                    markupPct,
+                    month,
+                    yearMonth,
+                    entryNo
+                });
+            }
+        });
+    }
+
+    mcCurrentData = enriched;
+
+    const uniqueItems     = new Set(enriched.map(r => r.itemCode)).size;
+    const totalTxns       = enriched.length;
+    const uniqueCustomers = new Set(enriched.map(r => r.customer)).size;
+    const totalRevenue    = enriched.reduce((s, r) => s + r.revenue, 0);
+    const avgMarkup       = totalTxns > 0
+        ? enriched.reduce((s, r) => s + r.markupPct, 0) / totalTxns
+        : null;
+    const lossTxns        = enriched.filter(r => r.markupPct < 0).length;
+
+    // Update KPIs
+    animateCounter('mckTotalItems', uniqueItems);
+    animateCounter('mckTotalTxns', totalTxns);
+    animateCounter('mckTotalCustomers', uniqueCustomers);
+    setText('mckTotalRevenue', formatSalesMoney(totalRevenue));
+    const avgEl = document.getElementById('mckAvgMarkup');
+    if (avgEl) {
+        avgEl.textContent = avgMarkup !== null ? avgMarkup.toFixed(1) + '%' : '—';
+        avgEl.style.color = avgMarkup !== null ? (avgMarkup < 0 ? 'var(--danger)' : avgMarkup < 10 ? 'var(--warning)' : 'var(--success)') : '';
+    }
+    animateCounter('mckLossTxns', lossTxns);
+
+    if (hintEl) {
+        hintEl.textContent = totalTxns > 0
+            ? `Found ${totalTxns.toLocaleString()} transactions for ${uniqueItems} item${uniqueItems !== 1 ? 's' : ''} sold at or below ${mcThreshold.toFixed(1)}% markup`
+            : `No transactions found with markup ≤ ${mcThreshold.toFixed(1)}%`;
+    }
+
+    if (emptyDiv) emptyDiv.style.display = 'none';
+    if (resultsDiv) resultsDiv.style.display = 'block';
+
+    renderMarginCheckCharts();
+    renderMarginCheckTable();
+}
+
+// --- Render Charts ---
+function renderMarginCheckCharts() {
+    if (!mcCurrentData) return;
+    const mutedColor = getComputedStyle(document.body).getPropertyValue('--text-muted').trim();
+    const data = mcCurrentData;
+
+    // Chart 1: Items by avg markup (horizontal bar, worst first)
+    const itemMarkups = {};
+    data.forEach(r => {
+        if (!itemMarkups[r.itemCode]) itemMarkups[r.itemCode] = { sum: 0, count: 0, revenue: 0, desc: r.itemDes };
+        itemMarkups[r.itemCode].sum += r.markupPct;
+        itemMarkups[r.itemCode].count++;
+        itemMarkups[r.itemCode].revenue += r.revenue;
+    });
+    const itemEntries = Object.entries(itemMarkups)
+        .map(([code, v]) => ({ code, label: v.desc || code, avgMarkup: v.sum / v.count, revenue: v.revenue }))
+        .sort((a, b) => a.avgMarkup - b.avgMarkup)
+        .slice(0, 15);
+
+    const itemColors = itemEntries.map(e => e.avgMarkup < 0 ? '#ef444480' : e.avgMarkup < 5 ? '#f59e0b80' : '#6366f180');
+    const itemBorders = itemEntries.map(e => e.avgMarkup < 0 ? '#ef4444' : e.avgMarkup < 5 ? '#f59e0b' : '#6366f1');
+
+    renderChart('chartMarginItems', {
+        type: 'bar',
+        data: {
+            labels: itemEntries.map(e => truncate(e.label || e.code, 22)),
+            datasets: [{
+                label: 'Avg Markup %',
+                data: itemEntries.map(e => parseFloat(e.avgMarkup.toFixed(2))),
+                backgroundColor: itemColors,
+                borderColor: itemBorders,
+                borderWidth: 1.5,
+                borderRadius: 5,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            indexAxis: 'y',
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(15,23,42,0.92)', padding: 12, cornerRadius: 8,
+                    callbacks: { label: ctx => `Markup: ${ctx.parsed.x.toFixed(1)}%` }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { color: 'rgba(255,255,255,0.04)' },
+                    ticks: { color: mutedColor, callback: v => v.toFixed(0) + '%' }
+                },
+                y: {
+                    grid: { display: false },
+                    ticks: { color: mutedColor, font: { size: 11 } }
+                }
+            }
+        }
+    });
+
+    // Chart 2: Revenue by customer (doughnut)
+    const custRevenue = {};
+    data.forEach(r => { custRevenue[r.customer] = (custRevenue[r.customer] || 0) + r.revenue; });
+    const custEntries = Object.entries(custRevenue).sort((a, b) => b[1] - a[1]).slice(0, 12);
+
+    renderChart('chartMarginCustomers', {
+        type: 'doughnut',
+        data: {
+            labels: custEntries.map(c => truncate(c[0], 20)),
+            datasets: [{
+                data: custEntries.map(c => c[1]),
+                backgroundColor: COLORS.palette.slice(0, 12).map(c => c + 'CC'),
+                borderColor: COLORS.palette.slice(0, 12),
+                borderWidth: 2, hoverOffset: 8
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { color: mutedColor, padding: 10, font: { size: 11, family: 'Outfit' }, usePointStyle: true, pointStyleWidth: 10 } },
+                tooltip: {
+                    backgroundColor: 'rgba(15,23,42,0.92)', padding: 12, cornerRadius: 8,
+                    callbacks: { label: ctx => ` ${ctx.label}: ${formatSalesMoney(ctx.parsed)}` }
+                }
+            },
+            cutout: '60%'
+        }
+    });
+
+    // Chart 3: Timeline (bar by year-month count)
+    const timelineMap = {};
+    data.forEach(r => {
+        if (!r.yearMonth) return;
+        if (!timelineMap[r.yearMonth]) timelineMap[r.yearMonth] = { count: 0, revenue: 0 };
+        timelineMap[r.yearMonth].count++;
+        timelineMap[r.yearMonth].revenue += r.revenue;
+    });
+    const sortedMonths = Object.keys(timelineMap).sort((a, b) => monthSortKey(a) - monthSortKey(b));
+
+    renderChart('chartMarginTimeline', {
+        type: 'bar',
+        data: {
+            labels: sortedMonths.map(m => formatMonthLabel(m)),
+            datasets: [{
+                label: 'Low-Margin Transactions',
+                data: sortedMonths.map(m => timelineMap[m].count),
+                backgroundColor: 'rgba(239,68,68,0.55)',
+                borderColor: '#ef4444',
+                borderWidth: 1.5, borderRadius: 5, borderSkipped: false
+            }, {
+                label: 'Revenue at Risk',
+                data: sortedMonths.map(m => timelineMap[m].revenue),
+                type: 'line',
+                borderColor: '#f59e0b',
+                backgroundColor: 'rgba(245,158,11,0.10)',
+                borderWidth: 2,
+                tension: 0.4,
+                fill: true,
+                pointBackgroundColor: '#f59e0b',
+                pointBorderColor: '#fff',
+                pointBorderWidth: 2,
+                pointRadius: 4,
+                yAxisID: 'y2'
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true, position: 'top',
+                    labels: { color: mutedColor, font: { size: 11, family: 'Outfit' }, usePointStyle: true }
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(15,23,42,0.92)', padding: 12, cornerRadius: 8,
+                    callbacks: {
+                        label: ctx => ctx.datasetIndex === 0
+                            ? `Transactions: ${ctx.parsed.y}`
+                            : `Revenue: ${formatSalesMoney(ctx.parsed.y)}`
+                    }
+                }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor, maxRotation: 45, font: { size: 10 } } },
+                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: mutedColor }, beginAtZero: true, title: { display: true, text: 'Txns', color: mutedColor, font: { size: 11 } } },
+                y2: { position: 'right', grid: { display: false }, ticks: { color: '#f59e0b', callback: v => formatSalesMoney(v) }, beginAtZero: true }
+            }
+        }
+    });
+}
+
+// --- Render Table ---
+function renderMarginCheckTable() {
+    if (!mcCurrentData) return;
+
+    const itemFilter = (document.getElementById('margincheckItemFilter')?.value || '').toLowerCase();
+    const custFilter = (document.getElementById('margincheckCustFilter')?.value || '').toLowerCase();
+    const showFilter = document.getElementById('margincheckShowFilter')?.value || 'all';
+    const sortBy     = document.getElementById('margincheckSortBy')?.value || 'markup_asc';
+    const tbody      = document.getElementById('margincheckBody');
+    const badgeEl    = document.getElementById('margincheckTxnBadge');
+    const subtitleEl = document.getElementById('margincheckTableSubtitle');
+
+    if (!tbody) return;
+
+    // Filter
+    let filtered = mcCurrentData.slice();
+    if (itemFilter) filtered = filtered.filter(r => r.itemCode.toLowerCase().includes(itemFilter) || r.itemDes.toLowerCase().includes(itemFilter));
+    if (custFilter) filtered = filtered.filter(r => r.customer.toLowerCase().includes(custFilter));
+    if (showFilter === 'loss')       filtered = filtered.filter(r => r.markupPct < 0);
+    if (showFilter === 'breakeven')  filtered = filtered.filter(r => r.markupPct >= 0 && r.markupPct <= 5);
+
+    // Sort
+    switch (sortBy) {
+        case 'markup_asc':    filtered.sort((a, b) => a.markupPct - b.markupPct); break;
+        case 'date_desc':     filtered.sort((a, b) => parseDateSafe(b.date) - parseDateSafe(a.date)); break;
+        case 'revenue_desc':  filtered.sort((a, b) => b.revenue - a.revenue); break;
+        case 'item_asc':      filtered.sort((a, b) => a.itemCode.localeCompare(b.itemCode)); break;
+        case 'customer_asc':  filtered.sort((a, b) => a.customer.localeCompare(b.customer)); break;
+    }
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-msg">No transactions match your filters</td></tr>';
+        if (badgeEl) badgeEl.textContent = '0 records';
+        return;
+    }
+
+    // Render based on view mode
+    if (mcViewMode === 'latestcustomer') {
+        renderMarginLatestPerCustomer(filtered, tbody, badgeEl, subtitleEl);
+    } else if (mcViewMode === 'byitem') {
+        renderMarginByItem(filtered, tbody, badgeEl, subtitleEl);
+    } else if (mcViewMode === 'bycustomer') {
+        renderMarginByCustomer(filtered, tbody, badgeEl, subtitleEl);
+    } else {
+        // All Transactions view
+        if (badgeEl) badgeEl.textContent = `${filtered.length.toLocaleString()} records`;
+        if (subtitleEl) subtitleEl.textContent = `Items sold at or below ${mcThreshold?.toFixed(1) ?? '—'}% markup`;
+
+        tbody.innerHTML = filtered.slice(0, 600).map((r, i) => {
+            const markupColor = r.markupPct < 0 ? 'var(--danger)' : r.markupPct < 5 ? 'var(--warning)' : 'var(--info)';
+            const markupBg    = r.markupPct < 0 ? 'rgba(239,68,68,0.10)' : r.markupPct < 5 ? 'rgba(245,158,11,0.10)' : 'rgba(99,102,241,0.08)';
+            const rowClass    = r.markupPct < 0 ? 'mc-row-loss' : r.markupPct < 5 ? 'mc-row-breakeven' : '';
+
+            const dateDisplay = r.date || '—';
+            return `<tr class="margincheck-row ${rowClass}" style="--row-index:${i}">
+                <td class="text-center" style="color:var(--text-muted);font-size:12px;">${i + 1}</td>
+                <td>
+                    <div style="font-weight:700;color:var(--accent-primary);font-size:13px;">${escapeHtml(r.itemCode)}</div>
+                    <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">${escapeHtml(truncate(r.itemDes, 40))}</div>
+                </td>
+                <td class="customer-name">${escapeHtml(r.customer)}</td>
+                <td><span style="font-size:12px;font-weight:500;white-space:nowrap;">${escapeHtml(dateDisplay)}</span></td>
+                <td class="text-right" style="font-weight:700;">${formatNumber(r.qty)}</td>
+                <td class="text-right" style="color:var(--info);font-weight:600;">${formatSalesMoney(r.unitPrice)}</td>
+                <td class="text-right" style="color:var(--cyan);font-weight:600;">${r.costPrice > 0 ? formatSalesMoney(r.costPrice) : '<span style="color:var(--text-muted)">—</span>'}</td>
+                <td class="text-right" style="color:var(--warning);font-weight:600;">${formatSalesMoney(r.revenue)}</td>
+                <td class="text-right">
+                    <span style="background:${markupBg};color:${markupColor};font-weight:700;padding:3px 10px;border-radius:20px;font-size:13px;border:1px solid ${markupColor}30;">${r.markupPct.toFixed(1)}%</span>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+}
+
+// --- Latest per Customer View ---
+function renderMarginLatestPerCustomer(filtered, tbody, badgeEl, subtitleEl) {
+    // Key = itemCode + '||' + customer  → keep only the row with the most recent date
+    const latestMap = {};
+    filtered.forEach(r => {
+        const key = r.itemCode + '||' + r.customer;
+        if (!latestMap[key]) {
+            latestMap[key] = r;
+        } else {
+            const existing = parseDateSafe(latestMap[key].date);
+            const thisOne  = parseDateSafe(r.date);
+            if (thisOne > existing) latestMap[key] = r;
+        }
+    });
+
+    let rows = Object.values(latestMap);
+
+    // Re-apply the active sort to the deduplicated rows
+    const sortBy = document.getElementById('margincheckSortBy')?.value || 'markup_asc';
+    switch (sortBy) {
+        case 'markup_asc':    rows.sort((a, b) => a.markupPct - b.markupPct); break;
+        case 'date_desc':     rows.sort((a, b) => parseDateSafe(b.date) - parseDateSafe(a.date)); break;
+        case 'revenue_desc':  rows.sort((a, b) => b.revenue - a.revenue); break;
+        case 'item_asc':      rows.sort((a, b) => a.itemCode.localeCompare(b.itemCode)); break;
+        case 'customer_asc':  rows.sort((a, b) => a.customer.localeCompare(b.customer)); break;
+    }
+
+    if (badgeEl) badgeEl.textContent = `${rows.length} unique customer-item pair${rows.length !== 1 ? 's' : ''}`;
+    if (subtitleEl) subtitleEl.textContent = 'One record per customer per item — most recent low-margin sale';
+
+    const today = new Date();
+
+    tbody.innerHTML = rows.slice(0, 600).map((r, i) => {
+        const markupColor = r.markupPct < 0 ? 'var(--danger)' : r.markupPct < 5 ? 'var(--warning)' : 'var(--info)';
+        const markupBg    = r.markupPct < 0 ? 'rgba(239,68,68,0.10)' : r.markupPct < 5 ? 'rgba(245,158,11,0.10)' : 'rgba(99,102,241,0.08)';
+        const rowClass    = r.markupPct < 0 ? 'mc-row-loss' : r.markupPct < 5 ? 'mc-row-breakeven' : '';
+
+        // Freshness badge (same logic as Item Lookup)
+        let dateCellHtml;
+        if (r.date) {
+            const purchaseDate = parseDateSafe(r.date);
+            const daysAgo = purchaseDate.getTime() > 0
+                ? Math.floor((today - purchaseDate) / (1000 * 60 * 60 * 24))
+                : null;
+            const daysLabel = daysAgo !== null
+                ? (daysAgo === 0 ? 'Today' : daysAgo === 1 ? 'Yesterday' : `${daysAgo}d ago`)
+                : '';
+            const freshnessClass = daysAgo !== null && daysAgo <= 30 ? 'il-fresh'
+                : daysAgo !== null && daysAgo <= 90 ? 'il-recent' : 'il-old';
+            dateCellHtml = `<div style="display:flex;flex-direction:column;gap:3px;">
+                <span style="font-size:12px;font-weight:500;white-space:nowrap;">${escapeHtml(r.date)}</span>
+                ${daysLabel ? `<span class="il-days-badge ${freshnessClass}">${daysLabel}</span>` : ''}
+            </div>`;
+        } else {
+            dateCellHtml = `<span style="color:var(--text-muted);font-size:12px;">—</span>`;
+        }
+
+        return `<tr class="margincheck-row ${rowClass}" style="--row-index:${i}">
+            <td class="text-center" style="color:var(--text-muted);font-size:12px;">${i + 1}</td>
+            <td>
+                <div style="font-weight:700;color:var(--accent-primary);font-size:13px;">${escapeHtml(r.itemCode)}</div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">${escapeHtml(truncate(r.itemDes, 40))}</div>
+            </td>
+            <td class="customer-name">${escapeHtml(r.customer)}</td>
+            <td>${dateCellHtml}</td>
+            <td class="text-right" style="font-weight:700;">${formatNumber(r.qty)}</td>
+            <td class="text-right" style="color:var(--info);font-weight:600;">${formatSalesMoney(r.unitPrice)}</td>
+            <td class="text-right" style="color:var(--cyan);font-weight:600;">${r.costPrice > 0 ? formatSalesMoney(r.costPrice) : '<span style="color:var(--text-muted)">—</span>'}</td>
+            <td class="text-right" style="color:var(--warning);font-weight:600;">${formatSalesMoney(r.revenue)}</td>
+            <td class="text-right">
+                <span style="background:${markupBg};color:${markupColor};font-weight:700;padding:3px 10px;border-radius:20px;font-size:13px;border:1px solid ${markupColor}30;">${r.markupPct.toFixed(1)}%</span>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+
+// --- Grouped by Item ---
+function renderMarginByItem(filtered, tbody, badgeEl, subtitleEl) {
+    const grouped = {};
+    filtered.forEach(r => {
+        const key = r.itemCode;
+        if (!grouped[key]) grouped[key] = { code: r.itemCode, desc: r.itemDes, rows: [] };
+        grouped[key].rows.push(r);
+    });
+
+    const groups = Object.values(grouped).sort((a, b) => {
+        const aAvg = a.rows.reduce((s, r) => s + r.markupPct, 0) / a.rows.length;
+        const bAvg = b.rows.reduce((s, r) => s + r.markupPct, 0) / b.rows.length;
+        return aAvg - bAvg;
+    });
+
+    if (badgeEl) badgeEl.textContent = `${groups.length} items`;
+    if (subtitleEl) subtitleEl.textContent = `Grouped by item — worst markup first`;
+
+    let html = '';
+    let rowIdx = 0;
+    groups.forEach(g => {
+        const avgMarkup = g.rows.reduce((s, r) => s + r.markupPct, 0) / g.rows.length;
+        const totalQty  = g.rows.reduce((s, r) => s + r.qty, 0);
+        const totalRev  = g.rows.reduce((s, r) => s + r.revenue, 0);
+        const custSet   = new Set(g.rows.map(r => r.customer));
+        const markupColor = avgMarkup < 0 ? 'var(--danger)' : avgMarkup < 5 ? 'var(--warning)' : 'var(--info)';
+
+        // Group header
+        html += `<tr class="mc-group-header">
+            <td colspan="9">
+                <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+                    <span style="font-weight:800;font-size:14px;color:var(--text-primary);">📦 ${escapeHtml(g.code)}</span>
+                    <span style="font-size:12px;color:var(--text-secondary);">${escapeHtml(truncate(g.desc, 50))}</span>
+                    <span style="margin-left:auto;display:flex;gap:12px;align-items:center;">
+                        <span style="font-size:12px;color:var(--text-muted);">${g.rows.length} txns · ${custSet.size} customers · ${formatSalesMoney(totalRev)} revenue</span>
+                        <span style="background:rgba(239,68,68,0.12);color:${markupColor};padding:3px 12px;border-radius:20px;font-weight:700;font-size:13px;border:1px solid ${markupColor}40;">Avg ${avgMarkup.toFixed(1)}%</span>
+                    </span>
+                </div>
+            </td>
+        </tr>`;
+
+        // Detail rows
+        g.rows.slice(0, 100).forEach(r => {
+            const mc = r.markupPct < 0 ? 'var(--danger)' : r.markupPct < 5 ? 'var(--warning)' : 'var(--info)';
+            const bg = r.markupPct < 0 ? 'rgba(239,68,68,0.10)' : r.markupPct < 5 ? 'rgba(245,158,11,0.10)' : 'rgba(99,102,241,0.08)';
+            html += `<tr class="margincheck-row" style="--row-index:${rowIdx++}">
+                <td class="text-center" style="color:var(--text-muted);font-size:11px;"></td>
+                <td><span style="font-size:11px;color:var(--text-muted);">↳</span></td>
+                <td class="customer-name">${escapeHtml(r.customer)}</td>
+                <td><span style="font-size:12px;white-space:nowrap;">${escapeHtml(r.date || '—')}</span></td>
+                <td class="text-right">${formatNumber(r.qty)}</td>
+                <td class="text-right" style="color:var(--info);">${formatSalesMoney(r.unitPrice)}</td>
+                <td class="text-right" style="color:var(--cyan);">${r.costPrice > 0 ? formatSalesMoney(r.costPrice) : '—'}</td>
+                <td class="text-right" style="color:var(--warning);">${formatSalesMoney(r.revenue)}</td>
+                <td class="text-right"><span style="background:${bg};color:${mc};padding:2px 8px;border-radius:20px;font-size:12px;font-weight:700;border:1px solid ${mc}30;">${r.markupPct.toFixed(1)}%</span></td>
+            </tr>`;
+        });
+    });
+
+    tbody.innerHTML = html;
+}
+
+// --- Grouped by Customer ---
+function renderMarginByCustomer(filtered, tbody, badgeEl, subtitleEl) {
+    const grouped = {};
+    filtered.forEach(r => {
+        if (!grouped[r.customer]) grouped[r.customer] = { customer: r.customer, rows: [] };
+        grouped[r.customer].rows.push(r);
+    });
+
+    const groups = Object.values(grouped).sort((a, b) => b.rows.length - a.rows.length);
+
+    if (badgeEl) badgeEl.textContent = `${groups.length} customers`;
+    if (subtitleEl) subtitleEl.textContent = `Grouped by customer — most transactions first`;
+
+    let html = '';
+    let rowIdx = 0;
+    groups.forEach(g => {
+        const avgMarkup = g.rows.reduce((s, r) => s + r.markupPct, 0) / g.rows.length;
+        const totalRev  = g.rows.reduce((s, r) => s + r.revenue, 0);
+        const itemSet   = new Set(g.rows.map(r => r.itemCode));
+        const markupColor = avgMarkup < 0 ? 'var(--danger)' : avgMarkup < 5 ? 'var(--warning)' : 'var(--info)';
+
+        html += `<tr class="mc-group-header">
+            <td colspan="9">
+                <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+                    <span style="font-weight:800;font-size:14px;color:var(--text-primary);">👤 ${escapeHtml(g.customer)}</span>
+                    <span style="margin-left:auto;display:flex;gap:12px;align-items:center;">
+                        <span style="font-size:12px;color:var(--text-muted);">${g.rows.length} txns · ${itemSet.size} items · ${formatSalesMoney(totalRev)}</span>
+                        <span style="background:rgba(239,68,68,0.12);color:${markupColor};padding:3px 12px;border-radius:20px;font-weight:700;font-size:13px;border:1px solid ${markupColor}40;">Avg ${avgMarkup.toFixed(1)}%</span>
+                    </span>
+                </div>
+            </td>
+        </tr>`;
+
+        g.rows.slice(0, 100).forEach(r => {
+            const mc = r.markupPct < 0 ? 'var(--danger)' : r.markupPct < 5 ? 'var(--warning)' : 'var(--info)';
+            const bg = r.markupPct < 0 ? 'rgba(239,68,68,0.10)' : r.markupPct < 5 ? 'rgba(245,158,11,0.10)' : 'rgba(99,102,241,0.08)';
+            html += `<tr class="margincheck-row" style="--row-index:${rowIdx++}">
+                <td class="text-center" style="color:var(--text-muted);font-size:11px;"></td>
+                <td>
+                    <div style="font-weight:700;color:var(--accent-primary);font-size:13px;">${escapeHtml(r.itemCode)}</div>
+                    <div style="font-size:11px;color:var(--text-secondary);">${escapeHtml(truncate(r.itemDes, 35))}</div>
+                </td>
+                <td><span style="font-size:11px;color:var(--text-muted);">↳</span></td>
+                <td><span style="font-size:12px;white-space:nowrap;">${escapeHtml(r.date || '—')}</span></td>
+                <td class="text-right">${formatNumber(r.qty)}</td>
+                <td class="text-right" style="color:var(--info);">${formatSalesMoney(r.unitPrice)}</td>
+                <td class="text-right" style="color:var(--cyan);">${r.costPrice > 0 ? formatSalesMoney(r.costPrice) : '—'}</td>
+                <td class="text-right" style="color:var(--warning);">${formatSalesMoney(r.revenue)}</td>
+                <td class="text-right"><span style="background:${bg};color:${mc};padding:2px 8px;border-radius:20px;font-size:12px;font-weight:700;border:1px solid ${mc}30;">${r.markupPct.toFixed(1)}%</span></td>
+            </tr>`;
+        });
+    });
+
+    tbody.innerHTML = html;
+}
+
+// --- Excel Export ---
+function exportMarginToExcel() {
+    if (!mcCurrentData || mcCurrentData.length === 0) {
+        showToast('No margin data to export', 'warning');
+        return;
+    }
+    if (typeof XLSX === 'undefined') {
+        showToast('Excel library not loaded', 'error');
+        return;
+    }
+
+    const rows = mcCurrentData.slice();
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    // Build data array
+    const wsData = [
+        [`Margin Check Report — Threshold: ≤ ${mcThreshold?.toFixed(1) ?? '—'}%`],
+        [`Generated: ${today}  |  ${rows.length} transactions across ${new Set(rows.map(r => r.itemCode)).size} items`],
+        [],
+        ['#', 'Item Code', 'Item Description', 'Customer', 'Date', 'Qty', 'Unit Price', 'Cost/PC', 'Revenue', 'Markup %']
+    ];
+
+    rows.forEach((r, i) => {
+        wsData.push([
+            i + 1,
+            r.itemCode,
+            r.itemDes,
+            r.customer,
+            r.date || '—',
+            r.qty,
+            r.unitPrice,
+            r.costPrice || '',
+            r.revenue,
+            parseFloat(r.markupPct.toFixed(2))
+        ]);
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols'] = [{ wch: 5 }, { wch: 18 }, { wch: 35 }, { wch: 28 }, { wch: 14 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 12 }];
+    ws['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
+        { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } }
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Margin Check');
+    XLSX.writeFile(wb, `Margin_Check_${mcThreshold?.toFixed(0) ?? 'X'}pct_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    showToast('Exported successfully!', 'success');
+}
+
+// helper: show toast (reuse or define simple version)
+function showToast(message, type = 'success') {
+    const tc = document.getElementById('toastContainer');
+    if (!tc) return;
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    tc.appendChild(toast);
+    setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 400); }, 2500);
+}
+
+// =========================================================
+// SMART SUPPLIER REORDER INTELLIGENCE MODULE (Data1 & Data2)
+// Direct item_code matching for targeted suppliers
+// =========================================================
+
+const TARGET_SUPPLIERS = [
+    "AFRI TEA & COFFEE BLENDERS (1963) LTD",
+    "ALPHA GROUP LTD.",
+    "DARSH INDUSTRIES LTD",
+    "GFP LIMITED",
+    "TANPACK TISSUES LTD"
+];
+
+let supReorderProcessed = null;
+let supSelectedSupplier = 'TARGET_5';
+let supCurrentBufferDays = 30; // Default: 1 Month (30 Days)
+let supCurrentVelocityMode = '2026_last3'; // Default: 2026 Last 3 Months
+let supCurrentStatusFilter = 'reorder_only';
+let supCurrentSort = 'urgency';
+let supCurrentSearch = '';
+let supCurrentLayout = 'cards';
+let supCollapsedCards = {};
+
+// Helper: parse pieces per carton from packing string
+function parsePackMultiplier(packingStr) {
+    if (!packingStr) return 1;
+    const str = packingStr.toString().trim();
+    // e.g. "24x350G", "12X1L", "6 x 500g"
+    const match = str.match(/^(\d+)\s*[xX]/);
+    if (match) {
+        const val = parseInt(match[1], 10);
+        if (val > 0) return val;
+    }
+    // e.g. "(8MLx50s)x4"
+    const matchNested = str.match(/x\s*(\d+)\s*$/i);
+    if (matchNested) {
+        const val = parseInt(matchNested[1], 10);
+        if (val > 0) return val;
+    }
+    // e.g. "100S", "50S"
+    const matchS = str.match(/^(\d+)\s*[sS]$/);
+    if (matchS) {
+        const val = parseInt(matchS[1], 10);
+        if (val > 0) return val;
+    }
+    return 1;
+}
+
+// ── Event Listeners ──
+function initSupplierReorderListeners() {
+    // Supplier filter pills
+    document.querySelectorAll('.sup-pill').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            document.querySelectorAll('.sup-pill').forEach(b => b.classList.remove('active'));
+            const pill = e.currentTarget;
+            pill.classList.add('active');
+            supSelectedSupplier = pill.dataset.supplier || 'TARGET_5';
+            const allSelect = document.getElementById('supAllSuppliersSelect');
+            if (allSelect) allSelect.value = '';
+            const dropWrap = document.getElementById('supSupplierDropdownWrap');
+            if (dropWrap) dropWrap.classList.remove('active');
+            renderSupplierSmartReorder();
+        });
+    });
+
+    // Supplier dropdown
+    const allSelect = document.getElementById('supAllSuppliersSelect');
+    if (allSelect) {
+        allSelect.addEventListener('change', (e) => {
+            const val = e.target.value;
+            const dropWrap = document.getElementById('supSupplierDropdownWrap');
+            if (val) {
+                document.querySelectorAll('.sup-pill').forEach(b => b.classList.remove('active'));
+                supSelectedSupplier = val;
+                if (dropWrap) dropWrap.classList.add('active');
+                renderSupplierSmartReorder();
+            } else {
+                if (dropWrap) dropWrap.classList.remove('active');
+            }
+        });
+    }
+
+    // Search input
+    const searchInput = document.getElementById('supSearchInput');
+    if (searchInput) {
+        searchInput.addEventListener('input', debounce((e) => {
+            supCurrentSearch = (e.target.value || '').trim().toLowerCase();
+            renderSupplierSmartReorder();
+        }, 250));
+    }
+
+    const searchClear = document.getElementById('supSearchClearBtn');
+    if (searchClear) {
+        searchClear.addEventListener('click', () => {
+            const inp = document.getElementById('supSearchInput');
+            if (inp) {
+                inp.value = '';
+                supCurrentSearch = '';
+                renderSupplierSmartReorder();
+            }
+        });
+    }
+
+    // Buffer selector (1 Month, etc.)
+    const bufSelect = document.getElementById('supBufferSelect');
+    if (bufSelect) {
+        bufSelect.addEventListener('change', (e) => {
+            supCurrentBufferDays = parseInt(e.target.value, 10) || 30;
+            processSupplierSmartReorder();
+            renderSupplierSmartReorder();
+        });
+    }
+
+    // Velocity selector (2026 last 3 months, etc.)
+    const velSelect = document.getElementById('supVelocitySelect');
+    if (velSelect) {
+        velSelect.addEventListener('change', (e) => {
+            supCurrentVelocityMode = e.target.value || '2026_last3';
+            processSupplierSmartReorder();
+            renderSupplierSmartReorder();
+        });
+    }
+
+    // Status filter
+    const statusSelect = document.getElementById('supStatusSelect');
+    if (statusSelect) {
+        statusSelect.addEventListener('change', (e) => {
+            supCurrentStatusFilter = e.target.value || 'reorder_only';
+            renderSupplierSmartReorder();
+        });
+    }
+
+    // Sort selector
+    const sortSelect = document.getElementById('supSortSelect');
+    if (sortSelect) {
+        sortSelect.addEventListener('change', (e) => {
+            supCurrentSort = e.target.value || 'urgency';
+            renderSupplierSmartReorder();
+        });
+    }
+
+    // View layout toggles
+    const btnCards = document.getElementById('btnSupViewCards');
+    const btnTable = document.getElementById('btnSupViewTable');
+    if (btnCards) {
+        btnCards.addEventListener('click', () => {
+            supCurrentLayout = 'cards';
+            btnCards.classList.add('active');
+            btnTable?.classList.remove('active');
+            const cView = document.getElementById('supReorderCardsView');
+            const tView = document.getElementById('supReorderTableView');
+            if (cView) cView.style.display = 'block';
+            if (tView) tView.style.display = 'none';
+        });
+    }
+    if (btnTable) {
+        btnTable.addEventListener('click', () => {
+            supCurrentLayout = 'table';
+            btnTable.classList.add('active');
+            btnCards?.classList.remove('active');
+            const cView = document.getElementById('supReorderCardsView');
+            const tView = document.getElementById('supReorderTableView');
+            if (cView) cView.style.display = 'none';
+            if (tView) tView.style.display = 'block';
+        });
+    }
+
+    // Header buttons
+    const btnExcel = document.getElementById('btnExportSupExcel');
+    if (btnExcel) btnExcel.addEventListener('click', exportSupplierReorderToExcel);
+
+    const btnPDF = document.getElementById('btnExportSupPDF');
+    if (btnPDF) btnPDF.addEventListener('click', exportAllOrSelectedSupplierPDF);
+
+    const btnPrint = document.getElementById('btnPrintSupPO');
+    if (btnPrint) btnPrint.addEventListener('click', printSupplierReorderPO);
+
+    const btnRecalc = document.getElementById('btnRecalcSupReorder');
+    if (btnRecalc) {
+        btnRecalc.addEventListener('click', () => {
+            processSupplierSmartReorder();
+            renderSupplierSmartReorder();
+            showToast('Reorder calculations updated', 'info');
+        });
+    }
+
+    // Modal close
+    const modalCloseBtn = document.getElementById('modalCloseBtn');
+    const modalFooterCloseBtn = document.getElementById('modalFooterCloseBtn');
+    const modalBackdrop = document.getElementById('supItemModal');
+    if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeSupplierItemDetailModal);
+    if (modalFooterCloseBtn) modalFooterCloseBtn.addEventListener('click', closeSupplierItemDetailModal);
+    if (modalBackdrop) {
+        modalBackdrop.addEventListener('click', (e) => {
+            if (e.target === modalBackdrop) closeSupplierItemDetailModal();
+        });
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeSupplierItemDetailModal();
+    });
+}
+
+// ── Tab Entrypoint ──
+function initSupplierReorderTab() {
+    if (!supReorderProcessed) {
+        checkAndProcessSupplierReorder();
+    }
+    renderSupplierSmartReorder();
+}
+
+// ── Check Readiness & Trigger Processing ──
+function checkAndProcessSupplierReorder() {
+    if (purchaseData && purchaseData.length > 0 && salesRawData && salesRawData.length > 0) {
+        processSupplierSmartReorder();
+    }
+}
+
+// Helper: Human-readable label for selected velocity mode
+function getSalesBasisLabel(mode) {
+    switch (mode) {
+        case '2026_last1': return '2026 Last 1M Sales';
+        case '2026_last2': return '2026 Last 2M Sales';
+        case '2026_last3': return '2026 Last 3M Sales';
+        case '2026_all':   return '2026 Total Sales';
+        case 'recent1':    return 'Latest 1M Sales';
+        case 'recent2':    return 'Latest 2M Sales';
+        case 'recent3':    return 'Latest 3M Sales';
+        case 'all':        return 'All Time Sales';
+        default:           return 'Sales in Period';
+    }
+}
+
+// ── Main Processing Engine ──
+function processSupplierSmartReorder() {
+    if (!purchaseData || purchaseData.length === 0) return;
+
+    // 1. Identify Data1 Purchase keys
+    const pHeaders = Object.keys(purchaseData[0]);
+    const pItemCodeKey = pHeaders.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) || pHeaders.find(h => h.toLowerCase().includes('item_code')) || pHeaders[0];
+    const pItemNameKey = pHeaders.find(h => h.toUpperCase().includes('ITEM NAME') || h.toUpperCase().includes('ITEMNAME')) || pHeaders[1];
+    const pPackingKey = pHeaders.find(h => h.toUpperCase().includes('PACKING') || h.toUpperCase().includes('PACK')) || pHeaders[2];
+    const pQtyKey = pHeaders.find(h => h.toUpperCase().includes('UNIT QTY') || h.toUpperCase().includes('UNIT_QTY') || h.toUpperCase().includes('QTY')) || pHeaders[3];
+    const pDateKey = pHeaders.find(h => h.toUpperCase().includes('TRAN_DATE') || h.toUpperCase().includes('DATE')) || pHeaders[4];
+    const pSupplierKey = pHeaders.find(h => h.toUpperCase().includes('SUPPLIER')) || pHeaders[5];
+    const pPricePCKey = pHeaders.find(h => h.toUpperCase().includes('PRICE PER PC') || h.toUpperCase().replace(/[\s_]/g, '').includes('PRICEPERPC')) || pHeaders[6];
+    const pPriceCTNKey = pHeaders.find(h => h.toUpperCase().includes('PRICE PER CTN') || h.toUpperCase().replace(/[\s_]/g, '').includes('PRICEPERCTN')) || pHeaders[7];
+
+    // Index Data1 by item_code
+    const d1Items = {};
+    const allSuppliersFound = new Set();
+
+    purchaseData.forEach(row => {
+        const rawCode = (row[pItemCodeKey] || '').toString().trim();
+        const supplier = (row[pSupplierKey] || '').toString().trim();
+        if (!rawCode || !supplier) return;
+
+        allSuppliersFound.add(supplier);
+
+        const qty = parseFloat((row[pQtyKey] || '0').toString().replace(/,/g, '')) || 0;
+        const pricePC = parseFloat((row[pPricePCKey] || '0').toString().replace(/,/g, '')) || 0;
+        const priceCTN = parseFloat((row[pPriceCTNKey] || '0').toString().replace(/,/g, '')) || 0;
+        const dateStr = (row[pDateKey] || '').toString().trim();
+        const itemName = (row[pItemNameKey] || '').toString().trim();
+        const packing = (row[pPackingKey] || '').toString().trim();
+
+        if (!d1Items[rawCode]) {
+            d1Items[rawCode] = {
+                itemCode: rawCode,
+                itemName: itemName,
+                supplier: supplier,
+                packing: packing,
+                packMultiplier: parsePackMultiplier(packing),
+                totalPurchased: 0,
+                latestDate: dateStr,
+                latestPricePC: pricePC,
+                latestPriceCTN: priceCTN,
+                purchases: []
+            };
+        }
+
+        const item = d1Items[rawCode];
+        item.totalPurchased += qty;
+        if (itemName && !item.itemName) item.itemName = itemName;
+        if (packing && !item.packing) {
+            item.packing = packing;
+            item.packMultiplier = parsePackMultiplier(packing);
+        }
+        // Always retain latest non-zero purchase price
+        if (pricePC > 0) item.latestPricePC = pricePC;
+        if (priceCTN > 0) item.latestPriceCTN = priceCTN;
+        if (dateStr) item.latestDate = dateStr;
+
+        item.purchases.push({
+            date: dateStr,
+            qty: qty,
+            pricePC: pricePC,
+            priceCTN: priceCTN
+        });
+    });
+
+    // Populate dropdown of all Data1 suppliers if not already filled
+    const allSupSelect = document.getElementById('supAllSuppliersSelect');
+    if (allSupSelect && allSupSelect.options.length <= 1) {
+        const sortedSups = [...allSuppliersFound].sort();
+        sortedSups.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s;
+            opt.textContent = s;
+            allSupSelect.appendChild(opt);
+        });
+    }
+
+    // 2. Index Current Stock from reorderData (Reorder Level Sheet)
+    const stockByCode = {};
+    const stockByName = {};
+
+    if (reorderData && reorderData.length > 0) {
+        const rHeaders = Object.keys(reorderData[0]);
+        const rCodeKey = rHeaders.find(h => h.toLowerCase() === 'column1') ||
+                         rHeaders.find(h => h.toLowerCase().includes('item_code') || h.toLowerCase() === 'item code') ||
+                         rHeaders.find(h => h.toLowerCase().includes('code'));
+        const rQtyKey = rHeaders.find(h => h.toLowerCase() === 'qty') ||
+                        rHeaders.find(h => h.toLowerCase().includes('current') || h.toLowerCase().includes('stock'));
+        const rNameKey = rHeaders.find(h => h.toUpperCase().includes('ITEMNAM') || h.toUpperCase().includes('ITEM NAME') || h.toUpperCase().includes('NAME'));
+
+        reorderData.forEach(r => {
+            const stockQty = parseFloat((r[rQtyKey] || '0').toString().replace(/,/g, '')) || 0;
+            const code = rCodeKey ? (r[rCodeKey] || '').toString().trim() : '';
+            const name = rNameKey ? (r[rNameKey] || '').toString().trim().toLowerCase() : '';
+
+            if (code && stockByCode[code] === undefined) {
+                stockByCode[code] = stockQty;
+            }
+            if (name && stockByName[name] === undefined) {
+                stockByName[name] = stockQty;
+            }
+        });
+    }
+
+    // 3. Index Data2 Sales by item_code
+    const d2Sales = {};
+    const allYearMonthsSet = new Set();
+
+    if (salesRawData && salesRawData.length > 0) {
+        const sHeaders = Object.keys(salesRawData[0]);
+        const sItemCodeKey = sHeaders.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) || sHeaders.find(h => h.toLowerCase().includes('item_code')) || sHeaders[1];
+        const sUnitsKey = sHeaders.find(h => h.toLowerCase().includes('total_units') || h.toLowerCase().includes('units')) || sHeaders[5];
+        const sPriceKey = sHeaders.find(h => h.toLowerCase().includes('unit_price') || h.toLowerCase().includes('price')) || sHeaders[2];
+        const sYMKey = sHeaders.find(h => h.toLowerCase().includes('year - copy') || h.toLowerCase().includes('year-copy')) || sHeaders[12];
+        const sMonthKey = sHeaders.find(h => h.toUpperCase() === 'MONTH') || sHeaders[11];
+        const sYearKey = sHeaders.find(h => h.toLowerCase().includes('year.1') || h.toLowerCase().includes('year')) || sHeaders[10];
+
+        salesRawData.forEach(row => {
+            const rawCode = (row[sItemCodeKey] || '').toString().trim();
+            if (!rawCode) return;
+
+            const units = parseFloat((row[sUnitsKey] || '0').toString().replace(/,/g, '')) || 0;
+            const price = parseFloat((row[sPriceKey] || '0').toString().replace(/,/g, '')) || 0;
+
+            let ym = (row[sYMKey] || '').toString().trim();
+            if (!ym) {
+                const y = (row[sYearKey] || '').toString().trim();
+                const m = (row[sMonthKey] || '').toString().trim();
+                if (y && m) ym = `${y}-${m}`;
+            }
+
+            if (ym) allYearMonthsSet.add(ym);
+
+            if (!d2Sales[rawCode]) {
+                d2Sales[rawCode] = {
+                    totalSold: 0,
+                    monthlySales: {},
+                    latestUnitPrice: price
+                };
+            }
+
+            const sItem = d2Sales[rawCode];
+            sItem.totalSold += units;
+            if (price > 0) sItem.latestUnitPrice = price;
+
+            if (ym) {
+                if (!sItem.monthlySales[ym]) {
+                    sItem.monthlySales[ym] = { units: 0, revenue: 0, count: 0, priceSum: 0 };
+                }
+                sItem.monthlySales[ym].units += units;
+                sItem.monthlySales[ym].revenue += (units * price);
+                sItem.monthlySales[ym].count += 1;
+                sItem.monthlySales[ym].priceSum += price;
+            }
+        });
+    }
+
+    // 4. Time Horizons: Extract 2026 Months and Basis Sets
+    const sortedYearMonths = [...allYearMonthsSet].sort((a, b) => monthSortKey(a) - monthSortKey(b));
+    const year2026Months = sortedYearMonths.filter(ym => parseMonthStr(ym).year === 2026);
+
+    const last1Month2026 = year2026Months.length >= 1 ? year2026Months.slice(-1) : sortedYearMonths.slice(-1);
+    const last2Months2026 = year2026Months.length >= 2 ? year2026Months.slice(-2) : (year2026Months.length > 0 ? year2026Months : sortedYearMonths.slice(-2));
+    const last3Months2026 = year2026Months.length >= 3 ? year2026Months.slice(-3) : (year2026Months.length > 0 ? year2026Months : sortedYearMonths.slice(-3));
+
+    const recent1Month = sortedYearMonths.slice(-1);
+    const recent2Months = sortedYearMonths.slice(-2);
+    const recent3Months = sortedYearMonths.slice(-3);
+
+    // Determine basis months and divisor for selected velocity mode
+    let basisMonths = last3Months2026;
+    let basisDivisor = Math.max(1, last3Months2026.length);
+
+    if (supCurrentVelocityMode === '2026_last1') {
+        basisMonths = last1Month2026;
+        basisDivisor = 1;
+    } else if (supCurrentVelocityMode === '2026_last2') {
+        basisMonths = last2Months2026;
+        basisDivisor = Math.max(1, last2Months2026.length);
+    } else if (supCurrentVelocityMode === '2026_last3') {
+        basisMonths = last3Months2026;
+        basisDivisor = Math.max(1, last3Months2026.length);
+    } else if (supCurrentVelocityMode === '2026_all') {
+        basisMonths = year2026Months.length > 0 ? year2026Months : sortedYearMonths;
+        basisDivisor = Math.max(1, basisMonths.length);
+    } else if (supCurrentVelocityMode === 'recent1') {
+        basisMonths = recent1Month;
+        basisDivisor = 1;
+    } else if (supCurrentVelocityMode === 'recent2') {
+        basisMonths = recent2Months;
+        basisDivisor = Math.max(1, recent2Months.length);
+    } else if (supCurrentVelocityMode === 'recent3') {
+        basisMonths = recent3Months;
+        basisDivisor = Math.max(1, recent3Months.length);
+    } else if (supCurrentVelocityMode === 'all') {
+        basisMonths = sortedYearMonths;
+        basisDivisor = Math.max(1, sortedYearMonths.length);
+    }
+
+    // 5. Build Enriched Items with Current Stock, Dynamic Basis Sales, and Inactive Filter Rule
+    const enrichedList = Object.values(d1Items).map(d1 => {
+        const d2 = d2Sales[d1.itemCode] || { totalSold: 0, monthlySales: {}, latestUnitPrice: 0 };
+        const totalSold = d2.totalSold || 0;
+
+        // --- A. Current Stock Determination ---
+        let currentStock = 0;
+        let stockSource = 'reorder_sheet';
+
+        if (stockByCode[d1.itemCode] !== undefined) {
+            currentStock = stockByCode[d1.itemCode];
+        } else if (d1.itemName && stockByName[d1.itemName.toLowerCase().trim()] !== undefined) {
+            currentStock = stockByName[d1.itemName.toLowerCase().trim()];
+        } else {
+            // Fallback to Data1 purchases minus Data2 sales
+            currentStock = Math.max(0, d1.totalPurchased - totalSold);
+            stockSource = 'calc_history';
+        }
+
+        // --- B. Sales Calculation & 3-Month Inactivity Check ---
+        // Rule: "also see my last three month sales. if there is no last three month sales of the items, then don't show reroder again."
+        const sales2026Last3 = last3Months2026.reduce((acc, ym) => acc + (d2.monthlySales[ym]?.units || 0), 0);
+        const hasRecentDemand = sales2026Last3 > 0;
+
+        // Sales in user's selected basis period
+        const basisSales = basisMonths.reduce((acc, ym) => acc + (d2.monthlySales[ym]?.units || 0), 0);
+
+        let monthlyDemand = 0;
+        if (hasRecentDemand) {
+            monthlyDemand = basisDivisor > 0 ? (basisSales / basisDivisor) : 0;
+        } else {
+            // If NO sales in last 3 months, demand is 0, do NOT reorder again!
+            monthlyDemand = 0;
+        }
+
+        const dailyRunRate = monthlyDemand > 0 ? (monthlyDemand / 30) : 0;
+
+        // --- C. Stock Coverage (in Months and Days) ---
+        let stockCoverMonths = 0;
+        let stockCoverDays = 0;
+        if (monthlyDemand > 0) {
+            stockCoverMonths = currentStock / monthlyDemand;
+            stockCoverDays = stockCoverMonths * 30;
+        } else if (currentStock > 0) {
+            stockCoverMonths = 99;
+            stockCoverDays = 999;
+        } else {
+            stockCoverMonths = 0;
+            stockCoverDays = 0;
+        }
+
+        // --- D. Target Stock for Selected Buffer (Default: 1 Month Supply / 30 Days) ---
+        const bufferMonths = supCurrentBufferDays / 30; // e.g. 30/30 = 1 month
+        const targetStockUnits = hasRecentDemand ? Math.ceil(monthlyDemand * bufferMonths) : 0;
+
+        // --- E. Deficit & Reorder Cartons Needed ---
+        let deficitUnits = 0;
+        if (hasRecentDemand && currentStock < targetStockUnits) {
+            deficitUnits = targetStockUnits - currentStock;
+        }
+
+        const packSize = d1.packMultiplier || 1;
+        let orderCTN = 0;
+        let orderPCS = 0;
+
+        if (hasRecentDemand && deficitUnits > 0) {
+            if (packSize > 1) {
+                orderCTN = Math.ceil(deficitUnits / packSize);
+                orderPCS = orderCTN * packSize; // round up to full carton
+            } else {
+                orderCTN = Math.ceil(deficitUnits);
+                orderPCS = orderCTN;
+            }
+        }
+
+        // --- F. Status Classification ---
+        let status = 'adequate';
+        if (!hasRecentDemand) {
+            status = 'no_sales'; // No sales in last 3 months -> do NOT reorder again
+        } else if (currentStock <= 0) {
+            status = 'critical'; // Out of Stock with active demand
+        } else if (stockCoverDays < 15) {
+            status = 'critical'; // Under 15 days supply
+        } else if (currentStock < targetStockUnits) {
+            status = 'low'; // Below 1 month target buffer
+        } else if (currentStock <= targetStockUnits * 1.5) {
+            status = 'adequate'; // Solid 1 month buffer
+        } else {
+            status = 'excess'; // Overstocked
+        }
+
+        // --- G. Financials: Latest Purchase Cost & Selling Price ---
+        const latestPricePC = d1.latestPricePC || 0;
+        const estCost = orderPCS * latestPricePC;
+        const sellingPrice = d2.latestUnitPrice || 0;
+        let marginPct = 0;
+        if (sellingPrice > 0 && latestPricePC > 0) {
+            marginPct = ((sellingPrice - latestPricePC) / sellingPrice) * 100;
+        }
+
+        return {
+            ...d1,
+            totalSold,
+            currentStock,
+            stockSource,
+            sales2026Last3,
+            basisSales,
+            hasRecentDemand,
+            monthlyDemand,
+            dailyRunRate,
+            stockCoverMonths,
+            stockCoverDays,
+            targetStockUnits,
+            deficitUnits,
+            orderCTN,
+            orderPCS,
+            latestPricePC,
+            estCost,
+            sellingPrice,
+            marginPct,
+            d2Monthly: d2.monthlySales
+        };
+    });
+
+    supReorderProcessed = {
+        items: enrichedList,
+        sortedYearMonths,
+        year2026Months,
+        last1Month2026,
+        last2Months2026,
+        last3Months2026,
+        recent1Month,
+        recent2Months,
+        recent3Months,
+        basisMonths,
+        basisDivisor
+    };
+}
+
+// ── Filter and Render Report ──
+function renderSupplierSmartReorder() {
+    if (!supReorderProcessed) {
+        if (!purchaseData || purchaseData.length === 0 || !salesRawData || salesRawData.length === 0) {
+            const cardsCont = document.getElementById('supCardsContainer');
+            const tbody = document.getElementById('supMasterTableBody');
+            if (cardsCont) cardsCont.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⏳</div><p class="empty-state-text">Loading Purchases (Data1), Sales (Data2), and Current Stock... Please wait.</p></div>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="16" class="empty-msg">Loading inventory intelligence...</td></tr>`;
+            return;
+        }
+        processSupplierSmartReorder();
+    }
+
+    if (!supReorderProcessed || !supReorderProcessed.items) return;
+
+    let items = supReorderProcessed.items;
+
+    // ── Update Subtitle with Active Sales Basis ──
+    const basisLabel = getSalesBasisLabel(supCurrentVelocityMode);
+    const subBasis = document.getElementById('supSubtitleBasis');
+    if (subBasis) subBasis.textContent = basisLabel;
+
+    // 1. Supplier Filter
+    if (supSelectedSupplier === 'TARGET_5') {
+        items = items.filter(i => {
+            const supName = (i.supplier || '').toLowerCase().trim();
+            return TARGET_SUPPLIERS.some(ts => {
+                const cleanTs = ts.toLowerCase().replace(/\./g, '').trim();
+                const cleanSup = supName.replace(/\./g, '');
+                return cleanSup.includes(cleanTs) || cleanTs.includes(cleanSup);
+            });
+        });
+    } else if (supSelectedSupplier && supSelectedSupplier !== 'ALL') {
+        items = items.filter(i => i.supplier.toLowerCase().trim() === supSelectedSupplier.toLowerCase().trim());
+    }
+
+    // 2. Search Filter
+    if (supCurrentSearch) {
+        const q = supCurrentSearch;
+        items = items.filter(i =>
+            i.itemCode.toLowerCase().includes(q) ||
+            i.itemName.toLowerCase().includes(q) ||
+            (i.packing && i.packing.toLowerCase().includes(q)) ||
+            i.supplier.toLowerCase().includes(q)
+        );
+    }
+
+    // 3. Status Filter
+    if (supCurrentStatusFilter === 'reorder_only') {
+        items = items.filter(i => i.orderCTN > 0 || i.orderPCS > 0);
+    } else if (supCurrentStatusFilter === 'critical') {
+        items = items.filter(i => i.status === 'critical');
+    } else if (supCurrentStatusFilter === 'low') {
+        items = items.filter(i => i.status === 'low');
+    } else if (supCurrentStatusFilter === 'adequate') {
+        items = items.filter(i => i.status === 'adequate' || i.status === 'excess');
+    } else if (supCurrentStatusFilter === 'no_sales') {
+        items = items.filter(i => i.status === 'no_sales');
+    }
+
+    // 4. Sorting
+    const urgencyWeight = { 'critical': 0, 'low': 1, 'adequate': 2, 'excess': 3, 'no_sales': 4 };
+    items.sort((a, b) => {
+        if (supCurrentSort === 'urgency') {
+            const diff = urgencyWeight[a.status] - urgencyWeight[b.status];
+            if (diff !== 0) return diff;
+            return b.orderCTN - a.orderCTN || b.estCost - a.estCost;
+        } else if (supCurrentSort === 'ctn_desc') {
+            return b.orderCTN - a.orderCTN;
+        } else if (supCurrentSort === 'cost_desc') {
+            return b.estCost - a.estCost;
+        } else if (supCurrentSort === 'qty_desc') {
+            return b.orderPCS - a.orderPCS;
+        } else if (supCurrentSort === 'stock_asc') {
+            return a.currentStock - b.currentStock;
+        } else if (supCurrentSort === 'code_asc') {
+            return a.itemCode.localeCompare(b.itemCode);
+        } else if (supCurrentSort === 'name_asc') {
+            return a.itemName.localeCompare(b.itemName);
+        }
+        return 0;
+    });
+
+    // ── Update KPIs ──
+    const itemsNeedingOrder = items.filter(i => i.orderCTN > 0);
+    const uniqueSupsWithOrders = new Set(itemsNeedingOrder.map(i => i.supplier)).size;
+    const totalOrderCTN = items.reduce((acc, i) => acc + i.orderCTN, 0);
+    const totalOrderPCS = items.reduce((acc, i) => acc + i.orderPCS, 0);
+    const totalOrderCost = items.reduce((acc, i) => acc + i.estCost, 0);
+    const totalCritical = items.filter(i => i.status === 'critical').length;
+
+    setText('supKpiSuppliers', formatNumber(uniqueSupsWithOrders));
+    setText('supKpiItems', formatNumber(itemsNeedingOrder.length));
+    setText('supKpiCartons', formatNumber(totalOrderCTN));
+    setText('supKpiUnits', formatNumber(totalOrderPCS));
+    setText('supKpiCost', formatSalesMoney(totalOrderCost));
+    setText('supKpiCritical', formatNumber(totalCritical));
+
+    // ── Render Views ──
+    renderSupplierCardsView(items);
+    renderSupplierTableView(items);
+}
+
+// ── 1. Supplier Grouped Cards View ──
+function renderSupplierCardsView(items) {
+    const container = document.getElementById('supCardsContainer');
+    if (!container) return;
+
+    if (items.length === 0) {
+        container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">✅</div><p class="empty-state-text">No items match the current filters. Inventory levels look solid!</p></div>`;
+        return;
+    }
+
+    const basisLabel = getSalesBasisLabel(supCurrentVelocityMode);
+
+    // Group items by supplier
+    const grouped = {};
+    items.forEach(item => {
+        if (!grouped[item.supplier]) grouped[item.supplier] = [];
+        grouped[item.supplier].push(item);
+    });
+
+    let html = '';
+    const sortedSuppliers = Object.keys(grouped).sort();
+
+    sortedSuppliers.forEach((sup, idx) => {
+        const supItems = grouped[sup];
+        const cardId = 'sup-card-' + idx;
+        const isCollapsed = !!supCollapsedCards[cardId];
+        const supOrderItems = supItems.filter(i => i.orderCTN > 0);
+        const supTotalCTN = supItems.reduce((acc, i) => acc + i.orderCTN, 0);
+        const supTotalPCS = supItems.reduce((acc, i) => acc + i.orderPCS, 0);
+        const supTotalCost = supItems.reduce((acc, i) => acc + i.estCost, 0);
+        const supCriticalCount = supItems.filter(i => i.status === 'critical').length;
+
+        html += `
+        <div class="sup-supplier-card" id="${cardId}">
+            <div class="sup-card-header" onclick="toggleSupplierCardAccordion('${cardId}')">
+                <div class="sup-card-header-left">
+                    <span class="sup-card-collapse-icon" id="arrow-${cardId}">${isCollapsed ? '▶' : '▼'}</span>
+                    <h3 class="sup-card-title">${escapeHtml(sup)}</h3>
+                    <span class="sup-card-badge">${supOrderItems.length} items to order</span>
+                    ${supCriticalCount > 0 ? `<span class="badge-critical">${supCriticalCount} critical</span>` : ''}
+                </div>
+                <div class="sup-card-header-stats" onclick="event.stopPropagation()">
+                    <div class="sup-stat-pill">
+                        <span class="sup-stat-pill-val" style="color: #c084fc; font-weight: 800;">${formatNumber(supTotalCTN)}</span>
+                        <span class="sup-stat-pill-lbl">Cartons (CTN)</span>
+                    </div>
+                    <div class="sup-stat-pill">
+                        <span class="sup-stat-pill-val">${formatNumber(supTotalPCS)}</span>
+                        <span class="sup-stat-pill-lbl">Units (PCS)</span>
+                    </div>
+                    <div class="sup-stat-pill">
+                        <span class="sup-stat-pill-val" style="color: #10b981;">${formatSalesMoney(supTotalCost)}</span>
+                        <span class="sup-stat-pill-lbl">Total Value (TZS)</span>
+                    </div>
+                    <button type="button" class="sup-card-po-btn" onclick="exportSupplierPO('${escapeHtml(sup).replace(/'/g, "\\'")}')" title="Download Excel Purchase Order for this supplier">
+                        📊 PO Excel
+                    </button>
+                    <button type="button" class="sup-card-po-btn sup-card-pdf-btn" onclick="exportSupplierPDF('${escapeHtml(sup).replace(/'/g, "\\'")}')" title="Download PDF Purchase Order for this supplier">
+                        📄 PO PDF
+                    </button>
+                </div>
+            </div>
+            <div class="sup-card-body" id="body-${cardId}" style="display: ${isCollapsed ? 'none' : 'block'};">
+                <div class="table-scroll">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Item Code</th>
+                                <th>Description & Packing</th>
+                                <th class="text-right">Current Stock (PCS)</th>
+                                <th class="text-right">${escapeHtml(basisLabel)}</th>
+                                <th class="text-right">Monthly Demand</th>
+                                <th class="text-right">Stock Cover</th>
+                                <th>Status</th>
+                                <th class="text-right">Order Cartons (CTN)</th>
+                                <th class="text-right">Order Units (PCS)</th>
+                                <th class="text-right">Cost/PC</th>
+                                <th class="text-right">Est. Cost (TZS)</th>
+                                <th class="text-right">Margin %</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${supItems.map((item, i) => `
+                                <tr>
+                                    <td>${i + 1}</td>
+                                    <td>
+                                        <a href="javascript:void(0)" class="item-code-link" onclick="openSupplierItemDetailModal('${item.itemCode}')">
+                                             ${escapeHtml(item.itemCode)}
+                                        </a>
+                                    </td>
+                                    <td>
+                                        <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(item.itemName)}</div>
+                                        <div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(item.packing || '—')}</div>
+                                    </td>
+                                    <td class="text-right font-mono ${item.currentStock <= 0 ? 'stock-deficit' : item.currentStock < item.targetStockUnits ? 'stock-low' : 'stock-ok'}" style="font-weight: 700; font-size: 13px;">
+                                        ${formatNumber(item.currentStock)}
+                                    </td>
+                                    <td class="text-right font-mono">${formatNumber(item.basisSales)}</td>
+                                    <td class="text-right font-mono" style="font-weight: 600;">${item.monthlyDemand.toFixed(1)}</td>
+                                    <td class="text-right font-mono">${item.stockCoverDays >= 999 ? '999d+' : (item.stockCoverMonths.toFixed(1) + ' mo (' + item.stockCoverDays.toFixed(0) + 'd)')}</td>
+                                    <td>${renderStatusBadge(item.status)}</td>
+                                    <td class="text-right font-mono ${item.orderCTN > 0 ? 'order-highlight' : ''}">
+                                        ${item.orderCTN > 0 ? `<span class="ctn-badge" style="font-size: 12px; padding: 4px 8px;">📦 ${formatNumber(item.orderCTN)}</span>` : '0'}
+                                    </td>
+                                    <td class="text-right font-mono">${formatNumber(item.orderPCS)}</td>
+                                    <td class="text-right font-mono">${formatSalesMoney(item.latestPricePC)}</td>
+                                    <td class="text-right font-mono" style="font-weight: 700; color: var(--text-primary);">${formatSalesMoney(item.estCost)}</td>
+                                    <td class="text-right font-mono" style="color: ${item.marginPct >= 20 ? '#10b981' : item.marginPct >= 10 ? '#f59e0b' : '#ef4444'}; font-weight: 600;">
+                                        ${item.marginPct > 0 ? item.marginPct.toFixed(1) + '%' : '—'}
+                                    </td>
+                                    <td>
+                                        <button type="button" class="sup-history-btn" data-item-code="${escapeHtml(item.itemCode)}" onclick="openSupplierItemDetailModal(this.getAttribute('data-item-code'))">
+                                            🔍 History
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        `;
+    });
+
+    container.innerHTML = html;
+}
+
+// ── 2. Master Table View ──
+function renderSupplierTableView(items) {
+    const tbody = document.getElementById('supMasterTableBody');
+    if (!tbody) return;
+
+    const basisLabel = getSalesBasisLabel(supCurrentVelocityMode);
+    const thBasis = document.getElementById('supMasterColSalesBasis');
+    if (thBasis) thBasis.textContent = basisLabel;
+
+    if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="16" class="empty-msg">No items found matching the selected filters.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = items.map((item, i) => `
+        <tr>
+            <td>${i + 1}</td>
+            <td style="font-size: 12px; font-weight: 600; color: var(--accent-primary);">${escapeHtml(item.supplier)}</td>
+            <td>
+                <a href="javascript:void(0)" class="item-code-link" data-item-code="${escapeHtml(item.itemCode)}" onclick="openSupplierItemDetailModal(this.getAttribute('data-item-code'))">
+                    ${escapeHtml(item.itemCode)}
+                </a>
+            </td>
+            <td>
+                <div style="font-weight: 600; color: var(--text-primary);">${escapeHtml(item.itemName)}</div>
+                <div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(item.packing || '—')}</div>
+            </td>
+            <td class="text-right font-mono ${item.currentStock <= 0 ? 'stock-deficit' : item.currentStock < item.targetStockUnits ? 'stock-low' : 'stock-ok'}" style="font-weight: 700; font-size: 13px;">
+                ${formatNumber(item.currentStock)}
+            </td>
+            <td class="text-right font-mono">${formatNumber(item.basisSales)}</td>
+            <td class="text-right font-mono" style="font-weight: 600;">${item.monthlyDemand.toFixed(1)}</td>
+            <td class="text-right font-mono">${item.stockCoverDays >= 999 ? '999d+' : (item.stockCoverMonths.toFixed(1) + ' mo (' + item.stockCoverDays.toFixed(0) + 'd)')}</td>
+            <td>${renderStatusBadge(item.status)}</td>
+            <td class="text-right font-mono ${item.orderCTN > 0 ? 'order-highlight' : ''}">
+                ${item.orderCTN > 0 ? `<span class="ctn-badge" style="font-size: 12px; padding: 4px 8px;">📦 ${formatNumber(item.orderCTN)}</span>` : '0'}
+            </td>
+            <td class="text-right font-mono">${formatNumber(item.orderPCS)}</td>
+            <td class="text-right font-mono">${formatSalesMoney(item.latestPricePC)}</td>
+            <td class="text-right font-mono" style="font-weight: 700; color: var(--text-primary);">${formatSalesMoney(item.estCost)}</td>
+            <td class="text-right font-mono">${formatSalesMoney(item.sellingPrice)}</td>
+            <td class="text-right font-mono" style="color: ${item.marginPct >= 20 ? '#10b981' : item.marginPct >= 10 ? '#f59e0b' : '#ef4444'}; font-weight: 600;">
+                ${item.marginPct > 0 ? item.marginPct.toFixed(1) + '%' : '—'}
+            </td>
+            <td>
+                <button type="button" class="sup-history-btn" data-item-code="${escapeHtml(item.itemCode)}" onclick="openSupplierItemDetailModal(this.getAttribute('data-item-code'))">
+                    🔍 History
+                </button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function renderStatusBadge(status) {
+    if (status === 'critical') return '<span class="badge-critical">🔴 Out of Stock</span>';
+    if (status === 'low') return '<span class="badge-low">🟠 Low Stock</span>';
+    if (status === 'adequate') return '<span class="badge-adequate">🟢 Adequate (1 Mo)</span>';
+    if (status === 'no_sales') return '<span class="badge-no-sales" title="0 sales in last 3 months — item excluded from reorder">⚪ No Recent Sales</span>';
+    return '<span class="badge-excess">🔵 Well Stocked</span>';
+}
+
+function toggleSupplierCardAccordion(cardId) {
+    const body = document.getElementById('body-' + cardId);
+    const arrow = document.getElementById('arrow-' + cardId);
+    if (!body) return;
+    const isHidden = body.style.display === 'none';
+    body.style.display = isHidden ? 'block' : 'none';
+    if (arrow) arrow.textContent = isHidden ? '▼' : '▶';
+    supCollapsedCards[cardId] = !isHidden;
+}
+
+// ── Detail Modal: Current Stock, Purchases vs Sales ──
+function openSupplierItemDetailModal(itemCode) {
+    if (!supReorderProcessed || !supReorderProcessed.items) {
+        checkAndProcessSupplierReorder();
+    }
+    if (!supReorderProcessed || !supReorderProcessed.items) {
+        showToast('Data is still loading, please wait a moment...', 'info');
+        return;
+    }
+    const cleanTargetCode = String(itemCode || '').trim();
+    const item = supReorderProcessed.items.find(i => String(i.itemCode).trim() === cleanTargetCode);
+    if (!item) {
+        console.warn('Item not found for detail modal:', itemCode);
+        showToast(`Item details not found: ${itemCode}`, 'warning');
+        return;
+    }
+
+    setText('modalItemSupName', item.supplier || 'Supplier');
+    setText('modalItemTitle', item.itemName || 'Item Details');
+    setText('modalItemCode', item.itemCode || '—');
+    setText('modalItemPacking', item.packing || 'Pack: Standard');
+
+    const purchased = Number(item.totalPurchased) || 0;
+    const sold = Number(item.totalSold) || 0;
+    const stock = Number(item.currentStock) || 0;
+    const demand = Number(item.monthlyDemand) || 0;
+    const coverDays = Number(item.stockCoverDays) || 0;
+    const coverMonths = Number(item.stockCoverMonths) || 0;
+    const margin = Number(item.marginPct) || 0;
+
+    setText('modalKpiPurchased', formatNumber(purchased));
+    setText('modalKpiSold', formatNumber(sold));
+    setText('modalKpiStock', formatNumber(stock) + ' PCS');
+    setText('modalKpiRunRate', demand.toFixed(1) + ' PCS/mo');
+    setText('modalKpiCover', coverDays >= 999 ? '999d+' : (coverMonths.toFixed(1) + ' mo (' + coverDays.toFixed(0) + 'd)'));
+    setText('modalKpiMargin', margin > 0 ? margin.toFixed(1) + '%' : '—');
+
+    // Data1 Purchases table
+    const pBody = document.getElementById('modalPurchaseHistoryBody');
+    if (pBody) {
+        if (!item.purchases || item.purchases.length === 0) {
+            pBody.innerHTML = `<tr><td colspan="4" class="empty-msg">No purchase transactions found in Data1</td></tr>`;
+        } else {
+            pBody.innerHTML = item.purchases.map(p => `
+                <tr>
+                    <td>${escapeHtml(p.date || '—')}</td>
+                    <td class="text-right font-mono">${formatNumber(p.qty || 0)}</td>
+                    <td class="text-right font-mono">${formatSalesMoney(p.pricePC || 0)}</td>
+                    <td class="text-right font-mono">${formatSalesMoney(p.priceCTN || 0)}</td>
+                </tr>
+            `).join('');
+        }
+    }
+    setText('modalPurchaseCount', (item.purchases ? item.purchases.length : 0) + ' records');
+
+    // Data2 Monthly Sales table
+    const sBody = document.getElementById('modalSalesHistoryBody');
+    if (sBody) {
+        const mKeys = Object.keys(item.d2Monthly || {}).sort((a, b) => monthSortKey(b) - monthSortKey(a));
+        if (mKeys.length === 0) {
+            sBody.innerHTML = `<tr><td colspan="4" class="empty-msg">No sales transactions found in Data2</td></tr>`;
+        } else {
+            sBody.innerHTML = mKeys.map(ym => {
+                const mData = item.d2Monthly[ym] || { units: 0, revenue: 0 };
+                const avgP = mData.units > 0 ? (mData.revenue / mData.units) : 0;
+                const is2026M = parseMonthStr(ym).year === 2026;
+                return `
+                    <tr style="${is2026M ? 'background: rgba(99, 102, 241, 0.08); font-weight: 600;' : ''}">
+                        <td><strong>${escapeHtml(formatMonthLabel(ym))}</strong> ${is2026M ? '⭐' : ''}</td>
+                        <td class="text-right font-mono">${formatNumber(mData.units || 0)}</td>
+                        <td class="text-right font-mono">${formatSalesMoney(avgP)}</td>
+                        <td class="text-right font-mono">${formatSalesMoney(mData.revenue || 0)}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        setText('modalSalesMonthsCount', mKeys.length + ' active months');
+    }
+
+    const modal = document.getElementById('supItemModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+}
+
+function closeSupplierItemDetailModal() {
+    const modal = document.getElementById('supItemModal');
+    if (modal) modal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+
+// ── Export Single Supplier PO (with Cartons, Current Stock & Latest Cost) ──
+function exportSupplierPO(supplierName) {
+    if (!supReorderProcessed || !supReorderProcessed.items) return;
+    if (typeof XLSX === 'undefined') {
+        showToast('Excel library not loaded', 'error');
+        return;
+    }
+
+    const items = supReorderProcessed.items.filter(i =>
+        i.supplier.toLowerCase().trim() === supplierName.toLowerCase().trim() && i.orderCTN > 0
+    );
+
+    if (items.length === 0) {
+        showToast(`No cartons currently need to be ordered for ${supplierName}`, 'warning');
+        return;
+    }
+
+    const basisLabel = getSalesBasisLabel(supCurrentVelocityMode);
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const wsData = [
+        [`PURCHASE ORDER: ${supplierName}`],
+        [`Generated: ${today}  |  Stock Buffer: ${supCurrentBufferDays} Days (1 Month Supply)  |  Basis: ${basisLabel}`],
+        [],
+        ['#', 'Item Code', 'Item Description', 'Packing', 'Current Stock (PCS)', 'Order Cartons (CTN)', 'Order Units (PCS)', 'Latest Cost/PC (TZS)', 'Total Order Value (TZS)']
+    ];
+
+    let totalCost = 0;
+    let totalPCS = 0;
+    let totalCTN = 0;
+
+    items.forEach((item, idx) => {
+        wsData.push([
+            idx + 1,
+            item.itemCode,
+            item.itemName,
+            item.packing || '',
+            item.currentStock,
+            item.orderCTN,
+            item.orderPCS,
+            item.latestPricePC || 0,
+            item.estCost || 0
+        ]);
+        totalCTN += item.orderCTN;
+        totalPCS += item.orderPCS;
+        totalCost += item.estCost;
+    });
+
+    wsData.push([]);
+    wsData.push(['TOTAL', '', '', '', '', totalCTN, totalPCS, '', totalCost]);
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols'] = [{ wch: 5 }, { wch: 18 }, { wch: 38 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 20 }, { wch: 24 }];
+    const wb = XLSX.utils.book_new();
+    const cleanSheetName = supplierName.slice(0, 28).replace(/[\/\\?*:[\]]/g, '_');
+    XLSX.utils.book_append_sheet(wb, ws, cleanSheetName);
+
+    const filename = `PO_${cleanSheetName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(wb, filename);
+    showToast(`Exported PO for ${supplierName} (${totalCTN} Cartons)`, 'success');
+}
+
+// ── Export Full Reorder Report (with Cartons, Current Stock & Latest Cost) ──
+function exportSupplierReorderToExcel() {
+    if (!supReorderProcessed || !supReorderProcessed.items) {
+        showToast('No reorder data available to export', 'warning');
+        return;
+    }
+    if (typeof XLSX === 'undefined') {
+        showToast('Excel library not loaded', 'error');
+        return;
+    }
+
+    let items = supReorderProcessed.items;
+    if (supSelectedSupplier === 'TARGET_5') {
+        items = items.filter(i => {
+            const supName = (i.supplier || '').toLowerCase().trim();
+            return TARGET_SUPPLIERS.some(ts => {
+                const cleanTs = ts.toLowerCase().replace(/\./g, '').trim();
+                const cleanSup = supName.replace(/\./g, '');
+                return cleanSup.includes(cleanTs) || cleanTs.includes(cleanSup);
+            });
+        });
+    } else if (supSelectedSupplier && supSelectedSupplier !== 'ALL') {
+        items = items.filter(i => i.supplier.toLowerCase().trim() === supSelectedSupplier.toLowerCase().trim());
+    }
+
+    const basisLabel = getSalesBasisLabel(supCurrentVelocityMode);
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const wsData = [
+        [`Smart Supplier Reorder Report (1 Month Stock Plan)`],
+        [`Scope: ${supSelectedSupplier === 'TARGET_5' ? 'Target 5 Suppliers' : supSelectedSupplier}  |  Buffer: ${supCurrentBufferDays} Days  |  Basis: ${basisLabel}  |  Date: ${today}`],
+        [],
+        [
+            '#', 'Supplier', 'Item Code', 'Item Description', 'Packing',
+            'Current Stock (PCS)', basisLabel, 'Monthly Demand (PCS)',
+            'Stock Cover (Months)', 'Status', 'Order Cartons (CTN)', 'Order Units (PCS)',
+            'Latest Cost/PC (TZS)', 'Total Order Cost (TZS)', 'Selling Price (TZS)', 'Gross Margin %'
+        ]
+    ];
+
+    let totalCost = 0;
+    let totalPCS = 0;
+    let totalCTN = 0;
+
+    items.forEach((item, idx) => {
+        wsData.push([
+            idx + 1,
+            item.supplier,
+            item.itemCode,
+            item.itemName,
+            item.packing || '',
+            item.currentStock,
+            item.basisSales,
+            parseFloat(item.monthlyDemand.toFixed(1)),
+            parseFloat(item.stockCoverMonths.toFixed(1)),
+            item.status.toUpperCase(),
+            item.orderCTN,
+            item.orderPCS,
+            item.latestPricePC || 0,
+            item.estCost || 0,
+            item.sellingPrice || 0,
+            parseFloat(item.marginPct.toFixed(2))
+        ]);
+        totalCTN += item.orderCTN;
+        totalPCS += item.orderPCS;
+        totalCost += item.estCost;
+    });
+
+    wsData.push([]);
+    wsData.push(['TOTAL', '', '', '', '', '', '', '', '', '', totalCTN, totalPCS, '', totalCost, '', '']);
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols'] = [
+        { wch: 5 }, { wch: 30 }, { wch: 16 }, { wch: 35 }, { wch: 14 },
+        { wch: 18 }, { wch: 18 }, { wch: 20 },
+        { wch: 18 }, { wch: 16 }, { wch: 18 }, { wch: 16 },
+        { wch: 18 }, { wch: 22 }, { wch: 18 }, { wch: 14 }
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Reorder Intelligence');
+    XLSX.writeFile(wb, `Supplier_Smart_Reorder_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    showToast(`Exported ${items.length} items (${totalCTN} Cartons)`, 'success');
+}
+
+// ── Export Single Supplier PO to PDF ──
+function exportSupplierPDF(supplierName) {
+    if (!supReorderProcessed || !supReorderProcessed.items) {
+        showToast('No reorder data available to export', 'warning');
+        return;
+    }
+
+    const items = supReorderProcessed.items.filter(i =>
+        i.supplier.toLowerCase().trim() === supplierName.toLowerCase().trim() && i.orderCTN > 0
+    );
+
+    if (items.length === 0) {
+        showToast(`No cartons currently need to be ordered for ${supplierName}`, 'warning');
+        return;
+    }
+
+    const hasJsPDF = (typeof window.jspdf !== 'undefined' && typeof window.jspdf.jsPDF !== 'undefined');
+    if (!hasJsPDF) {
+        printSupplierPOFallback(supplierName, items);
+        return;
+    }
+
+    try {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({
+            orientation: 'portrait',
+            unit: 'pt',
+            format: 'a4'
+        });
+
+        generateSupplierPDFPage(doc, supplierName, items);
+
+        const pageCount = doc.internal.getNumberOfPages();
+        for (let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(148, 163, 184);
+            doc.text(`Page ${i} of ${pageCount}  |  Megamart Item Intelligence  |  Official Purchase Order`, 40, 815);
+        }
+
+        const cleanFilename = `PO_${supplierName.slice(0, 25).replace(/[\/\\?*:[\]]/g, '_')}_${new Date().toISOString().slice(0, 10)}.pdf`;
+        doc.save(cleanFilename);
+        showToast(`Exported PDF PO for ${supplierName} (${items.reduce((a, b) => a + b.orderCTN, 0)} Cartons)`, 'success');
+    } catch (err) {
+        console.error('PDF export error:', err);
+        printSupplierPOFallback(supplierName, items);
+    }
+}
+
+// ── Export Combined PO for All Selected / Target Suppliers in PDF ──
+function exportAllOrSelectedSupplierPDF() {
+    if (!supReorderProcessed || !supReorderProcessed.items) {
+        showToast('No reorder data available to export', 'warning');
+        return;
+    }
+
+    let items = supReorderProcessed.items.filter(i => i.orderCTN > 0);
+    if (supSelectedSupplier === 'TARGET_5') {
+        items = items.filter(i => {
+            const supName = (i.supplier || '').toLowerCase().trim();
+            return TARGET_SUPPLIERS.some(ts => {
+                const cleanTs = ts.toLowerCase().replace(/\./g, '').trim();
+                const cleanSup = supName.replace(/\./g, '');
+                return cleanSup.includes(cleanTs) || cleanTs.includes(cleanSup);
+            });
+        });
+    } else if (supSelectedSupplier && supSelectedSupplier !== 'ALL') {
+        items = items.filter(i => i.supplier.toLowerCase().trim() === supSelectedSupplier.toLowerCase().trim());
+    }
+
+    if (items.length === 0) {
+        showToast('No cartons currently need to be ordered to export PDF', 'warning');
+        return;
+    }
+
+    // Group by supplier
+    const grouped = {};
+    items.forEach(i => {
+        if (!grouped[i.supplier]) grouped[i.supplier] = [];
+        grouped[i.supplier].push(i);
+    });
+
+    const supList = Object.keys(grouped).sort();
+
+    if (supList.length === 1) {
+        exportSupplierPDF(supList[0]);
+        return;
+    }
+
+    const hasJsPDF = (typeof window.jspdf !== 'undefined' && typeof window.jspdf.jsPDF !== 'undefined');
+    if (!hasJsPDF) {
+        window.print();
+        return;
+    }
+
+    try {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({
+            orientation: 'portrait',
+            unit: 'pt',
+            format: 'a4'
+        });
+
+        supList.forEach((sup, idx) => {
+            if (idx > 0) doc.addPage();
+            generateSupplierPDFPage(doc, sup, grouped[sup]);
+        });
+
+        const pageCount = doc.internal.getNumberOfPages();
+        for (let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(148, 163, 184);
+            doc.text(`Page ${i} of ${pageCount}  |  Megamart Item Intelligence  |  Official Purchase Order`, 40, 815);
+        }
+
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const filename = `Supplier_PO_${supSelectedSupplier === 'TARGET_5' ? 'Target5' : 'All'}_${dateStr}.pdf`;
+        doc.save(filename);
+        showToast(`Exported PDF POs for ${supList.length} suppliers`, 'success');
+    } catch (err) {
+        console.error('PDF export error:', err);
+        window.print();
+    }
+}
+
+// ── Helper: Generate Single Supplier PDF Layout Page ──
+function generateSupplierPDFPage(doc, supplierName, items) {
+    const basisLabel = getSalesBasisLabel(supCurrentVelocityMode);
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const poNumber = 'PO-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + Math.floor(1000 + Math.random() * 9000);
+
+    // Banner Header
+    doc.setFillColor(30, 41, 59); // Slate 800
+    doc.rect(0, 0, 595.28, 65, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.setTextColor(255, 255, 255);
+    doc.text('MEGAMART PURCHASE ORDER', 40, 32);
+
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(203, 213, 225);
+    doc.text(`Generated: ${today}  |  PO Ref: ${poNumber}`, 40, 48);
+
+    // Vendor Info Card
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(40, 75, 515, 52, 4, 4, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text('VENDOR / SUPPLIER:', 50, 91);
+
+    doc.setFontSize(12);
+    doc.setTextColor(15, 23, 42);
+    doc.text(supplierName, 50, 107);
+
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Stock Buffer Target: ${supCurrentBufferDays} Days (1 Month)  |  Demand Basis: ${basisLabel}`, 50, 120);
+
+    let totalCTN = 0;
+    let totalPCS = 0;
+    let totalCost = 0;
+
+    const tableRows = items.map((item, idx) => {
+        totalCTN += item.orderCTN;
+        totalPCS += item.orderPCS;
+        totalCost += item.estCost;
+        return [
+            idx + 1,
+            item.itemCode,
+            item.itemName,
+            item.packing || '—',
+            formatNumber(item.currentStock),
+            formatNumber(item.orderCTN),
+            formatNumber(item.orderPCS),
+            formatSalesMoney(item.latestPricePC),
+            formatSalesMoney(item.estCost)
+        ];
+    });
+
+    tableRows.push([
+        { content: 'TOTAL', colSpan: 5, styles: { halign: 'right', fontStyle: 'bold', fillColor: [241, 245, 249] } },
+        { content: formatNumber(totalCTN) + ' CTN', styles: { halign: 'right', fontStyle: 'bold', fillColor: [241, 245, 249], textColor: [124, 58, 237] } },
+        { content: formatNumber(totalPCS) + ' PCS', styles: { halign: 'right', fontStyle: 'bold', fillColor: [241, 245, 249] } },
+        { content: '', styles: { fillColor: [241, 245, 249] } },
+        { content: formatSalesMoney(totalCost), styles: { halign: 'right', fontStyle: 'bold', fillColor: [241, 245, 249], textColor: [16, 185, 129] } }
+    ]);
+
+    doc.autoTable({
+        startY: 135,
+        head: [['#', 'Item Code', 'Description', 'Packing', 'Stock (PCS)', 'Order CTN', 'Order PCS', 'Cost/PC (TZS)', 'Total (TZS)']],
+        body: tableRows,
+        theme: 'grid',
+        headStyles: {
+            fillColor: [37, 99, 235],
+            textColor: [255, 255, 255],
+            fontSize: 7.5,
+            fontStyle: 'bold'
+        },
+        columnStyles: {
+            0: { cellWidth: 20, halign: 'center' },
+            1: { cellWidth: 55, fontStyle: 'bold' },
+            2: { cellWidth: 155 },
+            3: { cellWidth: 55 },
+            4: { cellWidth: 46, halign: 'right' },
+            5: { cellWidth: 48, halign: 'right', fontStyle: 'bold' },
+            6: { cellWidth: 46, halign: 'right' },
+            7: { cellWidth: 45, halign: 'right' },
+            8: { cellWidth: 60, halign: 'right', fontStyle: 'bold' }
+        },
+        styles: {
+            fontSize: 7.5,
+            cellPadding: 3.5,
+            overflow: 'linebreak',
+            valign: 'middle'
+        },
+        alternateRowStyles: {
+            fillColor: [248, 250, 252]
+        },
+        margin: { left: 40, right: 40, bottom: 45 }
+    });
+
+    const finalY = (doc.lastAutoTable && doc.lastAutoTable.finalY) ? doc.lastAutoTable.finalY + 25 : 500;
+    if (finalY < 770) {
+        doc.setFontSize(7.5);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(100, 116, 139);
+        doc.text('Prepared By: __________________________', 40, finalY);
+        doc.text('Authorized Signature: __________________________', 330, finalY);
+        doc.text('Date: __________________________', 40, finalY + 16);
+        doc.text('Store Stamp: __________________________', 330, finalY + 16);
+    }
+}
+
+// ── Fallback Print Dialog for PO (if jsPDF fails/offline) ──
+function printSupplierPOFallback(supplierName, items) {
+    const basisLabel = getSalesBasisLabel(supCurrentVelocityMode);
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    let totalCTN = 0, totalPCS = 0, totalCost = 0;
+    const rowsHtml = items.map((it, idx) => {
+        totalCTN += it.orderCTN; totalPCS += it.orderPCS; totalCost += it.estCost;
+        return `<tr>
+            <td style="text-align:center;">${idx + 1}</td>
+            <td><strong>${escapeHtml(it.itemCode)}</strong></td>
+            <td>${escapeHtml(it.itemName)}</td>
+            <td>${escapeHtml(it.packing || '—')}</td>
+            <td style="text-align:right;">${formatNumber(it.currentStock)}</td>
+            <td style="text-align:right; font-weight:bold; color:#7c3aed;">${formatNumber(it.orderCTN)}</td>
+            <td style="text-align:right;">${formatNumber(it.orderPCS)}</td>
+            <td style="text-align:right;">${formatSalesMoney(it.latestPricePC)}</td>
+            <td style="text-align:right; font-weight:bold;">${formatSalesMoney(it.estCost)}</td>
+        </tr>`;
+    }).join('');
+
+    const printWin = window.open('', '_blank', 'width=900,height=700');
+    if (!printWin) {
+        window.print();
+        return;
+    }
+    printWin.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Purchase Order - ${escapeHtml(supplierName)}</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 30px; color: #1e293b; }
+                .po-header { display: flex; justify-content: space-between; border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px; }
+                .po-title { font-size: 20px; font-weight: bold; color: #1e293b; }
+                .po-info { font-size: 12px; color: #64748b; }
+                .vendor-box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px; }
+                table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 30px; }
+                th { background: #2563eb; color: #fff; text-align: left; padding: 8px 6px; }
+                td { border-bottom: 1px solid #e2e8f0; padding: 6px; }
+                tr:nth-child(even) td { background: #f8fafc; }
+                .totals-row td { background: #f1f5f9; font-weight: bold; }
+                .sig-grid { display: flex; justify-content: space-between; margin-top: 40px; font-size: 11px; }
+                @media print { body { padding: 0; } }
+            </style>
+        </head>
+        <body>
+            <div class="po-header">
+                <div>
+                    <div class="po-title">MEGAMART PURCHASE ORDER</div>
+                    <div class="po-info">Generated: ${today} | Demand Basis: ${escapeHtml(basisLabel)}</div>
+                </div>
+                <div style="text-align:right;">
+                    <div style="font-size: 14px; font-weight: bold;">STOCK BUFFER: ${supCurrentBufferDays} DAYS</div>
+                </div>
+            </div>
+            <div class="vendor-box">
+                <div style="font-size: 11px; color:#64748b; text-transform:uppercase; font-weight:bold;">Supplier:</div>
+                <div style="font-size: 16px; font-weight: bold; color:#0f172a;">${escapeHtml(supplierName)}</div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Item Code</th>
+                        <th>Description</th>
+                        <th>Packing</th>
+                        <th style="text-align:right;">Stock (PCS)</th>
+                        <th style="text-align:right;">Order CTN</th>
+                        <th style="text-align:right;">Order PCS</th>
+                        <th style="text-align:right;">Cost/PC (TZS)</th>
+                        <th style="text-align:right;">Total (TZS)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rowsHtml}
+                    <tr class="totals-row">
+                        <td colspan="5" style="text-align:right;">TOTAL</td>
+                        <td style="text-align:right; color:#7c3aed;">${formatNumber(totalCTN)} CTN</td>
+                        <td style="text-align:right;">${formatNumber(totalPCS)} PCS</td>
+                        <td></td>
+                        <td style="text-align:right; color:#10b981;">${formatSalesMoney(totalCost)}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <div class="sig-grid">
+                <div>Prepared By: ___________________________<br><br>Date: ___________________________</div>
+                <div>Authorized Signature: ___________________________<br><br>Store Stamp: ___________________________</div>
+            </div>
+            <script>window.onload = function() { window.print(); };<\/script>
+        </body>
+        </html>
+    `);
+    printWin.document.close();
+}
+
+// ── Print Purchase Orders ──
+function printSupplierReorderPO() {
+    window.print();
+}
+
+
+
+
