@@ -12,6 +12,8 @@
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 </head>
 
 <body>
@@ -53,14 +55,17 @@
                 <button class="report-tab" data-tab="deepdive">
                     <span class="tab-icon">🔍</span>Deep Dive
                 </button>
-                <button class="report-tab" data-tab="reorder">
-                    <span class="tab-icon">🛒</span>Smart Reorder
+                <button class="report-tab" data-tab="supplier-reorder">
+                    <span class="tab-icon">⚡</span>Supplier Reorder
                 </button>
                 <button class="report-tab" data-tab="salesintel">
                     <span class="tab-icon">💰</span>Sales Intel
                 </button>
                 <button class="report-tab" data-tab="itemlookup">
                     <span class="tab-icon">🔎</span>Item Lookup
+                </button>
+                <button class="report-tab" data-tab="margincheck">
+                    <span class="tab-icon">📐</span>Margin Check
                 </button>
             </div>
         </div>
@@ -573,108 +578,238 @@
             </div>
         </div>
 
-        <!-- ====== SMART REORDER TAB ====== -->
-        <div id="tab-reorder" class="tab-content">
-            <div class="section-header">
-                <div class="section-icon reorder-icon">🛒</div>
-                <div>
-                    <h2 class="section-title">Purchasing Action Plan</h2>
-                    <p class="section-subtitle">Clear, actionable order recommendations grouped by supplier based on
-                        your sales and current stock.</p>
-                </div>
-                <span class="section-badge success" id="reorderTotalCostBadge">Total: 0.00</span>
-            </div>
 
-            <!-- Action Plan KPIs -->
-            <div class="reorder-kpi-strip" id="actionPlanKpis"
-                style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
-                <div class="reorder-kpi-card rk-urgent"
-                    style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--primary); display: flex; align-items: center; gap: 16px;">
-                    <div class="rk-icon" style="font-size: 24px;">🏭</div>
-                    <div class="rk-info">
-                        <div class="rk-value" id="planSuppliers" style="font-size: 24px; font-weight: 700;">0</div>
-                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Suppliers to Contact
-                        </div>
-                    </div>
+        <!-- ====== SUPPLIER SMART REORDER TAB (Data1 & Data2) ====== -->
+        <div id="tab-supplier-reorder" class="tab-content">
+            <!-- Header Section -->
+            <div class="section-header sup-header-wrap">
+                <div class="section-icon reorder-icon" style="background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; font-size: 24px;">⚡</div>
+                <div class="sup-header-titles">
+                    <h2 class="section-title">Supplier Smart Reorder</h2>
+                    <p class="section-subtitle">
+                        Restock for <strong>1 Month Supply</strong> based on <strong>Current Stock</strong> and <strong id="supSubtitleBasis">2026 Sales (Last 3 Months)</strong> with latest unit purchase costs.
+                    </p>
                 </div>
-                <div class="reorder-kpi-card rk-total"
-                    style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--accent-primary); display: flex; align-items: center; gap: 16px;">
-                    <div class="rk-icon" style="font-size: 24px;">📦</div>
-                    <div class="rk-info">
-                        <div class="rk-value" id="planItems" style="font-size: 24px; font-weight: 700;">0</div>
-                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Total Items to Order
-                        </div>
-                    </div>
-                </div>
-                <div class="reorder-kpi-card rk-cost"
-                    style="background: var(--surface-light); padding: 16px; border-radius: 12px; border-left: 4px solid var(--info); display: flex; align-items: center; gap: 16px;">
-                    <div class="rk-icon" style="font-size: 24px;">💰</div>
-                    <div class="rk-info">
-                        <div class="rk-value" id="planEstCost" style="font-size: 24px; font-weight: 700;">0.00</div>
-                        <div class="rk-label" style="font-size: 12px; color: var(--text-muted);">Estimated Total Cost
-                        </div>
-                    </div>
+                <div class="sup-header-actions">
+                    <button class="action-btn btn-primary" id="btnExportSupExcel" title="Export current reorder report to Excel">
+                        📥 Export Excel
+                    </button>
+                    <button class="action-btn btn-secondary" id="btnExportSupPDF" title="Export Purchase Order to PDF">
+                        📄 Export PO (PDF)
+                    </button>
+                    <button class="action-btn btn-ghost" id="btnPrintSupPO" title="Print Purchase Orders for selected suppliers">
+                        🖨️ Print PO
+                    </button>
+                    <button class="action-btn btn-ghost" id="btnRecalcSupReorder" title="Recalculate with current settings">
+                        🔄 Recalculate
+                    </button>
                 </div>
             </div>
 
-            <!-- Filter Bar -->
-            <div class="filter-bar">
-                <div class="filter-group" style="flex: 1;">
-                    <label class="filter-label">Search Supplier or Item</label>
-                    <input type="text" class="filter-input" id="planSearch" placeholder="Type supplier name or item code..."
-                        autocomplete="off" oninput="renderReorder()">
+            <!-- Target Supplier Filter Strip -->
+            <div class="sup-pill-strip-container">
+                <div class="sup-pill-strip-label">
+                    <span>🎯 Supplier Focus:</span>
                 </div>
-                <div class="filter-group" style="flex: 0 0 auto;">
-                    <label class="filter-label">View Layout</label>
-                    <div
-                        style="display: flex; gap: 8px; background: var(--bg-card); padding: 4px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
-                        <button id="btnViewCards" onclick="setReorderView('cards')"
-                            style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent-glow); color: var(--accent-primary); font-weight: 600; cursor: pointer; transition: 0.2s; font-family: inherit;">📁
-                            Cards</button>
-                        <button id="btnViewList" onclick="setReorderView('list')"
-                            style="padding: 6px 16px; border-radius: 4px; border: none; background: transparent; color: var(--text-secondary); font-weight: 600; cursor: pointer; transition: 0.2s; font-family: inherit;">📋
-                            List</button>
+                <div class="sup-pills" id="supPillsContainer">
+                    <button class="sup-pill active" data-supplier="TARGET_5">⭐ All 5 Target Suppliers</button>
+                    <button class="sup-pill" data-supplier="AFRI TEA & COFFEE BLENDERS (1963) LTD">AFRI TEA & COFFEE BLENDERS</button>
+                    <button class="sup-pill" data-supplier="ALPHA GROUP LTD.">ALPHA GROUP LTD.</button>
+                    <button class="sup-pill" data-supplier="DARSH INDUSTRIES LTD">DARSH INDUSTRIES LTD</button>
+                    <button class="sup-pill" data-supplier="GFP LIMITED">GFP LIMITED</button>
+                    <button class="sup-pill" data-supplier="TANPACK TISSUES LTD">TANPACK TISSUES LTD</button>
+                </div>
+                <div class="sup-more-select-wrap">
+                    <div class="sup-custom-dropdown" id="supSupplierDropdownWrap">
+                        <span class="sup-dropdown-icon">🏢</span>
+                        <select id="supAllSuppliersSelect" class="sup-pro-select" title="Choose any other supplier in Data1">
+                            <option value="">Other Suppliers in Data1...</option>
+                        </select>
+                        <span class="sup-dropdown-chevron">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </span>
                     </div>
                 </div>
             </div>
 
-            <!-- Card View Container -->
-            <div id="reorderCardsView">
-                <div id="supplierActionPlans">
+            <!-- KPI Strip -->
+            <div class="sup-kpi-grid">
+                <div class="sup-kpi-card kpi-border-amber">
+                    <div class="sup-kpi-icon">🏭</div>
+                    <div class="sup-kpi-content">
+                        <div class="sup-kpi-val" id="supKpiSuppliers">0</div>
+                        <div class="sup-kpi-lbl">Suppliers with Orders</div>
+                    </div>
+                </div>
+                <div class="sup-kpi-card kpi-border-indigo">
+                    <div class="sup-kpi-icon">📦</div>
+                    <div class="sup-kpi-content">
+                        <div class="sup-kpi-val" id="supKpiItems">0</div>
+                        <div class="sup-kpi-lbl">Items to Reorder</div>
+                    </div>
+                </div>
+                <div class="sup-kpi-card kpi-border-cyan">
+                    <div class="sup-kpi-icon">🔢</div>
+                    <div class="sup-kpi-content">
+                        <div class="sup-kpi-val" id="supKpiUnits">0</div>
+                        <div class="sup-kpi-lbl">Total Reorder Units (PCS)</div>
+                    </div>
+                </div>
+                <div class="sup-kpi-card kpi-border-purple">
+                    <div class="sup-kpi-icon">📦</div>
+                    <div class="sup-kpi-content">
+                        <div class="sup-kpi-val" id="supKpiCartons">0</div>
+                        <div class="sup-kpi-lbl">Total Cartons (CTN)</div>
+                    </div>
+                </div>
+                <div class="sup-kpi-card kpi-border-emerald">
+                    <div class="sup-kpi-icon">💰</div>
+                    <div class="sup-kpi-content">
+                        <div class="sup-kpi-val" id="supKpiCost">0.00</div>
+                        <div class="sup-kpi-lbl">Estimated Total Cost (TZS)</div>
+                    </div>
+                </div>
+                <div class="sup-kpi-card kpi-border-rose">
+                    <div class="sup-kpi-icon">🚨</div>
+                    <div class="sup-kpi-content">
+                        <div class="sup-kpi-val" id="supKpiCritical">0</div>
+                        <div class="sup-kpi-lbl">Critical / Stockouts</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Control & Parameter Toolbar -->
+            <div class="sup-toolbar">
+                <div class="sup-toolbar-group sup-search-group">
+                    <label class="filter-label"><span class="filter-label-icon">🔍</span> Search Catalog</label>
+                    <div class="sup-search-box">
+                        <span class="sup-search-icon">🔎</span>
+                        <input type="text" id="supSearchInput" class="filter-input sup-pro-input" placeholder="Search by item code, item name, packing..." autocomplete="off">
+                        <button type="button" id="supSearchClearBtn" class="sup-search-clear" title="Clear">✕</button>
+                    </div>
+                </div>
+                <div class="sup-toolbar-group">
+                    <label class="filter-label"><span class="filter-label-icon">⏳</span> Target Buffer</label>
+                    <div class="sup-custom-dropdown">
+                        <span class="sup-dropdown-icon">📦</span>
+                        <select id="supBufferSelect" class="sup-pro-select">
+                            <option value="30" selected>1 Month Supply (30 Days)</option>
+                            <option value="15">15 Days (0.5 Month)</option>
+                            <option value="45">45 Days (1.5 Months)</option>
+                            <option value="60">2 Months (60 Days)</option>
+                            <option value="90">3 Months (90 Days)</option>
+                        </select>
+                        <span class="sup-dropdown-chevron">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </span>
+                    </div>
+                </div>
+                <div class="sup-toolbar-group">
+                    <label class="filter-label"><span class="filter-label-icon">📈</span> Velocity Basis</label>
+                    <div class="sup-custom-dropdown">
+                        <span class="sup-dropdown-icon">⚡</span>
+                        <select id="supVelocitySelect" class="sup-pro-select">
+                            <option value="2026_last3" selected>2026 Last 3 Months (Default)</option>
+                            <option value="2026_last2">2026 Last 2 Months</option>
+                            <option value="2026_last1">2026 Last 1 Month</option>
+                            <option value="2026_all">2026 Full Year Average</option>
+                            <option value="recent3">Latest 3 Months (All Data)</option>
+                            <option value="recent2">Latest 2 Months (All Data)</option>
+                            <option value="recent1">Latest 1 Month (All Data)</option>
+                            <option value="all">Full History Average</option>
+                        </select>
+                        <span class="sup-dropdown-chevron">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </span>
+                    </div>
+                </div>
+                <div class="sup-toolbar-group">
+                    <label class="filter-label"><span class="filter-label-icon">🚦</span> Stock Filter</label>
+                    <div class="sup-custom-dropdown">
+                        <span class="sup-dropdown-icon">🎯</span>
+                        <select id="supStatusSelect" class="sup-pro-select">
+                            <option value="reorder_only" selected>Reorder Needed Only</option>
+                            <option value="critical">🔴 Critical / Out of Stock</option>
+                            <option value="low">🟠 Low Stock (< 1 Mo)</option>
+                            <option value="adequate">🟢 Sufficient Stock</option>
+                            <option value="no_sales">⚪ Inactive (0 Sales in Last 3M)</option>
+                            <option value="all">All Items</option>
+                        </select>
+                        <span class="sup-dropdown-chevron">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </span>
+                    </div>
+                </div>
+                <div class="sup-toolbar-group">
+                    <label class="filter-label"><span class="filter-label-icon">↕️</span> Sort Order</label>
+                    <div class="sup-custom-dropdown">
+                        <span class="sup-dropdown-icon">🔃</span>
+                        <select id="supSortSelect" class="sup-pro-select">
+                            <option value="urgency" selected>Urgency (Critical First)</option>
+                            <option value="ctn_desc">Cartons to Order (High to Low)</option>
+                            <option value="cost_desc">Order Value (High to Low)</option>
+                            <option value="qty_desc">Units to Order (High to Low)</option>
+                            <option value="stock_asc">Current Stock (Lowest First)</option>
+                            <option value="code_asc">Item Code (Ascending)</option>
+                            <option value="name_asc">Item Name (A to Z)</option>
+                        </select>
+                        <span class="sup-dropdown-chevron">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </span>
+                    </div>
+                </div>
+                <div class="sup-toolbar-group sup-view-toggle-group">
+                    <label class="filter-label"><span class="filter-label-icon">🖥️</span> View Layout</label>
+                    <div class="sup-layout-toggles">
+                        <button type="button" class="sup-layout-btn active" id="btnSupViewCards" title="Grouped by Supplier Cards">
+                            📁 Cards
+                        </button>
+                        <button type="button" class="sup-layout-btn" id="btnSupViewTable" title="Consolidated Master Table">
+                            📋 Table
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dynamic Content Area -->
+            <!-- 1. Supplier Grouped Cards View -->
+            <div id="supReorderCardsView" class="sup-view-section active-view">
+                <div id="supCardsContainer" class="sup-cards-container">
                     <div class="empty-state">
-                        <div class="empty-state-icon">🛒</div>
-                        <p class="empty-state-text">Loading purchasing data...</p>
+                        <div class="empty-state-icon">⚡</div>
+                        <p class="empty-state-text">Loading Supplier Reorder Intelligence...</p>
                     </div>
                 </div>
             </div>
 
-            <!-- List View Container -->
-            <div id="reorderListView" style="display: none;">
-                <div class="section-header" style="margin-top: 20px;">
-                    <div class="section-icon info">📋</div>
-                    <div>
-                        <h2 class="section-title">All Required Items</h2>
-                        <p class="section-subtitle">A simple list of every item that needs to be restocked.</p>
-                    </div>
-                </div>
+            <!-- 2. Master Consolidated Table View -->
+            <div id="supReorderTableView" class="sup-view-section" style="display: none;">
                 <div class="table-container">
                     <div class="table-scroll">
-                        <table class="data-table" id="simpleOrderTable">
+                        <table class="data-table sup-reorder-table" id="supMasterTable">
                             <thead>
                                 <tr>
+                                    <th>#</th>
                                     <th>Supplier</th>
                                     <th>Item Code</th>
-                                    <th>Item Name</th>
-                                    <th>Last Purchase</th>
+                                    <th>Item Name & Packing</th>
                                     <th class="text-right">Current Stock (PCS)</th>
-                                    <th class="text-right">Order Qty (PCS)</th>
-                                    <th class="text-right">Est. Price/PC</th>
-                                    <th class="text-right">Total Est. Cost</th>
+                                    <th class="text-right" id="supMasterColSalesBasis">2026 Last 3M Sales</th>
+                                    <th class="text-right">Monthly Demand (PCS)</th>
+                                    <th class="text-right">Stock Cover</th>
+                                    <th>Status</th>
+                                    <th class="text-right">Order Cartons (CTN)</th>
+                                    <th class="text-right">Order Units (PCS)</th>
+                                    <th class="text-right">Latest Cost/PC</th>
+                                    <th class="text-right">Est. Order Cost (TZS)</th>
+                                    <th class="text-right">Selling Price</th>
+                                    <th class="text-right">Margin %</th>
+                                    <th>Action</th>
                                 </tr>
                             </thead>
-                            <tbody id="simpleOrderBody">
+                            <tbody id="supMasterTableBody">
                                 <tr>
-                                    <td colspan="8" class="empty-msg">Waiting for data...</td>
+                                    <td colspan="17" class="empty-msg">Waiting for data...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -682,8 +817,6 @@
                 </div>
             </div>
         </div>
-
-        <!-- ====== SALES INTELLIGENCE TAB ====== -->
         <div id="tab-salesintel" class="tab-content">
 
             <!-- Sales Intel Hero -->
@@ -1366,7 +1499,327 @@
         </div>
         <!-- END ITEM LOOKUP TAB -->
 
+        <!-- ====== MARGIN CHECK TAB ====== -->
+        <div id="tab-margincheck" class="tab-content">
+
+            <!-- Hero -->
+            <div class="margincheck-hero">
+                <div class="margincheck-hero-bg"></div>
+                <div class="margincheck-hero-content">
+                    <div class="margincheck-hero-icon">📐</div>
+                    <h1 class="margincheck-hero-title">Margin Check</h1>
+                    <p class="margincheck-hero-subtitle">Set your minimum margin threshold and instantly discover which items you are selling at or below that margin — including who bought them and when</p>
+
+                    <!-- Margin Input -->
+                    <div class="margincheck-input-wrapper">
+                        <div class="margincheck-input-box" id="margincheckInputBox">
+                            <div class="margincheck-input-icon">%</div>
+                            <input
+                                type="number"
+                                class="margincheck-input"
+                                id="margincheckThresholdInput"
+                                placeholder="e.g. 15"
+                                min="0"
+                                max="500"
+                                step="0.5"
+                                autocomplete="off"
+                            >
+                            <div class="margincheck-input-label">Min Markup %</div>
+                        </div>
+                        <button class="margincheck-run-btn" id="margincheckRunBtn">
+                            <span>🔍</span> Analyze Margins
+                        </button>
+                    </div>
+                    <div class="margincheck-hint" id="margincheckHint">Enter a markup % threshold and click Analyze — items sold AT or BELOW that markup will appear</div>
+                </div>
+            </div>
+
+            <!-- Results Section -->
+            <div id="margincheckResults" style="display:none;">
+
+                <!-- KPI Strip -->
+                <div class="margincheck-kpi-strip" id="margincheckKpis">
+                    <div class="margincheck-kpi mc-kpi-danger">
+                        <div class="margincheck-kpi-icon">⚠️</div>
+                        <div class="margincheck-kpi-body">
+                            <div class="margincheck-kpi-value" id="mckTotalItems">0</div>
+                            <div class="margincheck-kpi-label">Low-Margin Items</div>
+                        </div>
+                    </div>
+                    <div class="margincheck-kpi mc-kpi-warning">
+                        <div class="margincheck-kpi-icon">🧾</div>
+                        <div class="margincheck-kpi-body">
+                            <div class="margincheck-kpi-value" id="mckTotalTxns">0</div>
+                            <div class="margincheck-kpi-label">Transactions</div>
+                        </div>
+                    </div>
+                    <div class="margincheck-kpi mc-kpi-info">
+                        <div class="margincheck-kpi-icon">👥</div>
+                        <div class="margincheck-kpi-body">
+                            <div class="margincheck-kpi-value" id="mckTotalCustomers">0</div>
+                            <div class="margincheck-kpi-label">Customers Affected</div>
+                        </div>
+                    </div>
+                    <div class="margincheck-kpi mc-kpi-revenue">
+                        <div class="margincheck-kpi-icon">💰</div>
+                        <div class="margincheck-kpi-body">
+                            <div class="margincheck-kpi-value" id="mckTotalRevenue">0</div>
+                            <div class="margincheck-kpi-label">Revenue at Risk</div>
+                        </div>
+                    </div>
+                    <div class="margincheck-kpi mc-kpi-avg">
+                        <div class="margincheck-kpi-icon">📊</div>
+                        <div class="margincheck-kpi-body">
+                            <div class="margincheck-kpi-value" id="mckAvgMarkup">—</div>
+                            <div class="margincheck-kpi-label">Avg Markup (Filtered)</div>
+                        </div>
+                    </div>
+                    <div class="margincheck-kpi mc-kpi-loss">
+                        <div class="margincheck-kpi-icon">🔴</div>
+                        <div class="margincheck-kpi-body">
+                            <div class="margincheck-kpi-value" id="mckLossTxns">0</div>
+                            <div class="margincheck-kpi-label">Below-Cost Sales</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Charts Row -->
+                <div class="margincheck-charts-row">
+                    <div class="chart-card mc-chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📦</span>
+                            <span class="chart-header-title">Items by Avg Markup</span>
+                        </div>
+                        <div class="chart-body" style="height: 300px;">
+                            <canvas id="chartMarginItems"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card mc-chart-card">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">👥</span>
+                            <span class="chart-header-title">Revenue by Customer</span>
+                        </div>
+                        <div class="chart-body" style="height: 300px;">
+                            <canvas id="chartMarginCustomers"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card mc-chart-card" style="grid-column: span 2;">
+                        <div class="chart-header">
+                            <span class="chart-header-icon">📈</span>
+                            <span class="chart-header-title">Low-Margin Sales Timeline</span>
+                        </div>
+                        <div class="chart-body" style="height: 260px;">
+                            <canvas id="chartMarginTimeline"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Table Header & Filters -->
+                <div class="itemlookup-table-header" style="margin-top: 24px;">
+                    <div class="itemlookup-table-title-row">
+                        <div class="section-icon warning" style="border-radius:10px;padding:8px 10px;">⚠️</div>
+                        <div>
+                            <h2 class="section-title" style="font-size:18px;">Low-Margin Transactions</h2>
+                            <p class="section-subtitle" style="font-size:13px;" id="margincheckTableSubtitle">Items sold at or below your threshold markup</p>
+                        </div>
+                        <span class="section-badge warning" id="margincheckTxnBadge" style="margin-left:auto;">0 records</span>
+                        <button class="nav-action-btn" id="exportMarginBtn" onclick="exportMarginToExcel()" title="Export to Excel" style="margin-left:12px; padding:8px 16px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; background:var(--success-bg); color:var(--success); border:1px solid rgba(16,185,129,0.3); border-radius:var(--radius-sm); cursor:pointer; font-family:inherit; transition:var(--transition);">
+                            📥 Export Excel
+                        </button>
+                    </div>
+
+                    <!-- View Toggle -->
+                    <div class="itemlookup-view-toggle" id="margincheckViewToggle" style="margin-top:12px;">
+                        <button class="il-view-btn active" id="mcViewAll" data-mcview="all">
+                            <span class="il-view-icon">📋</span>
+                            <span class="il-view-label">All Transactions</span>
+                        </button>
+                        <button class="il-view-btn" id="mcViewLatest" data-mcview="latestcustomer">
+                            <span class="il-view-icon">🕐</span>
+                            <span class="il-view-label">Latest per Customer</span>
+                        </button>
+                        <button class="il-view-btn" id="mcViewByItem" data-mcview="byitem">
+                            <span class="il-view-icon">📦</span>
+                            <span class="il-view-label">Grouped by Item</span>
+                        </button>
+                        <button class="il-view-btn" id="mcViewByCustomer" data-mcview="bycustomer">
+                            <span class="il-view-icon">👥</span>
+                            <span class="il-view-label">Grouped by Customer</span>
+                        </button>
+                    </div>
+
+
+                    <div class="filter-bar" style="margin-top:12px;">
+                        <div class="filter-group">
+                            <label class="filter-label">Filter by Item</label>
+                            <input type="text" class="filter-input" id="margincheckItemFilter" placeholder="Type item name or code..." autocomplete="off">
+                        </div>
+                        <div class="filter-group">
+                            <label class="filter-label">Filter by Customer</label>
+                            <input type="text" class="filter-input" id="margincheckCustFilter" placeholder="Type customer name..." autocomplete="off">
+                        </div>
+                        <div class="filter-group" style="max-width:200px;">
+                            <label class="filter-label">Show</label>
+                            <select class="filter-input" id="margincheckShowFilter">
+                                <option value="all">All (≤ threshold)</option>
+                                <option value="loss">Below-Cost Only (markup &lt; 0%)</option>
+                                <option value="breakeven">Breakeven (0–5%)</option>
+                            </select>
+                        </div>
+                        <div class="filter-group" style="max-width:160px;">
+                            <label class="filter-label">Sort By</label>
+                            <select class="filter-input" id="margincheckSortBy">
+                                <option value="markup_asc">Markup (Low→High)</option>
+                                <option value="date_desc">Date (Newest First)</option>
+                                <option value="revenue_desc">Revenue (High→Low)</option>
+                                <option value="item_asc">Item (A→Z)</option>
+                                <option value="customer_asc">Customer (A→Z)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Transactions Table -->
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table class="data-table" id="margincheckTable">
+                            <thead id="margincheckTableHead">
+                                <tr>
+                                    <th>#</th>
+                                    <th>Item Code / Description</th>
+                                    <th>Customer</th>
+                                    <th>Date</th>
+                                    <th class="text-right">Qty</th>
+                                    <th class="text-right">Unit Price</th>
+                                    <th class="text-right">Cost/PC</th>
+                                    <th class="text-right">Revenue</th>
+                                    <th class="text-right">Markup %</th>
+                                </tr>
+                            </thead>
+                            <tbody id="margincheckBody">
+                                <tr>
+                                    <td colspan="9" class="empty-msg">Set a threshold above and click Analyze</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Empty State -->
+            <div id="margincheckEmpty" class="margincheck-empty-state">
+                <div class="margincheck-empty-icon">📐</div>
+                <p class="margincheck-empty-text">Enter your minimum markup % above and click <strong>Analyze Margins</strong> to discover which items you are underselling</p>
+                <div class="margincheck-empty-features">
+                    <div class="itemlookup-feature-chip">📦 Item Analysis</div>
+                    <div class="itemlookup-feature-chip">👥 Customer Tracking</div>
+                    <div class="itemlookup-feature-chip">📅 Date History</div>
+                    <div class="itemlookup-feature-chip">💰 Cost vs Price</div>
+                    <div class="itemlookup-feature-chip">📊 Markup Charts</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Item Detail Modal for Supplier Reorder -->
+        <div id="supItemModal" class="modal-backdrop" style="display: none;">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-header">
+                    <div class="modal-title-wrap">
+                        <span class="modal-badge-sup" id="modalItemSupName">SUPPLIER</span>
+                        <h3 class="modal-title" id="modalItemTitle">Item Details</h3>
+                        <div class="modal-subtitles">
+                            <span class="modal-sub-code" id="modalItemCode">100000000</span>
+                            <span class="modal-sub-sep">•</span>
+                            <span class="modal-sub-pack" id="modalItemPacking">Packing</span>
+                        </div>
+                    </div>
+                    <button type="button" class="modal-close-btn" id="modalCloseBtn" title="Close">✕</button>
+                </div>
+                <div class="modal-body">
+                    <!-- Modal Mini KPI Cards -->
+                    <div class="modal-kpi-row">
+                        <div class="modal-kpi">
+                            <span class="modal-kpi-lbl">Total Purchased (D1)</span>
+                            <span class="modal-kpi-val" id="modalKpiPurchased">0</span>
+                        </div>
+                        <div class="modal-kpi">
+                            <span class="modal-kpi-lbl">Total Sold (D2)</span>
+                            <span class="modal-kpi-val" id="modalKpiSold">0</span>
+                        </div>
+                        <div class="modal-kpi">
+                            <span class="modal-kpi-lbl">Est. Current Stock</span>
+                            <span class="modal-kpi-val" id="modalKpiStock">0</span>
+                        </div>
+                        <div class="modal-kpi">
+                            <span class="modal-kpi-lbl">Monthly Sales Velocity</span>
+                            <span class="modal-kpi-val" id="modalKpiRunRate">0/mo</span>
+                        </div>
+                        <div class="modal-kpi">
+                            <span class="modal-kpi-lbl">Stock Coverage</span>
+                            <span class="modal-kpi-val" id="modalKpiCover">0 days</span>
+                        </div>
+                        <div class="modal-kpi">
+                            <span class="modal-kpi-lbl">Gross Margin</span>
+                            <span class="modal-kpi-val highlight-margin" id="modalKpiMargin">0.0%</span>
+                        </div>
+                    </div>
+
+                    <!-- Side by Side Tables: Purchases (D1) vs Sales (D2) -->
+                    <div class="modal-dual-grid">
+                        <div class="modal-col">
+                            <div class="modal-section-head">
+                                <h4>🛒 Purchase History (Data1)</h4>
+                                <span class="badge badge-subtle" id="modalPurchaseCount">0 records</span>
+                            </div>
+                            <div class="table-scroll-modal">
+                                <table class="data-table modal-sub-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th class="text-right">Qty</th>
+                                            <th class="text-right">Price/PC</th>
+                                            <th class="text-right">Price/CTN</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="modalPurchaseHistoryBody">
+                                        <tr><td colspan="4" class="empty-msg">No purchase records</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="modal-col">
+                            <div class="modal-section-head">
+                                <h4>📈 Monthly Sales Performance (Data2)</h4>
+                                <span class="badge badge-subtle" id="modalSalesMonthsCount">0 months</span>
+                            </div>
+                            <div class="table-scroll-modal">
+                                <table class="data-table modal-sub-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Month</th>
+                                            <th class="text-right">Sold Qty</th>
+                                            <th class="text-right">Avg Price</th>
+                                            <th class="text-right">Revenue</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="modalSalesHistoryBody">
+                                        <tr><td colspan="4" class="empty-msg">No sales records</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="modalFooterCloseBtn">Close</button>
+                </div>
+            </div>
+        </div>
+
     </div>
+
 
     <!-- Configuration: Paste your Google Apps Script URLs here -->
     <script>
