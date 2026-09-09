@@ -67,6 +67,9 @@
                 <button class="report-tab" data-tab="margincheck">
                     <span class="tab-icon">📐</span>Margin Check
                 </button>
+                <button class="report-tab" data-tab="price-proposal">
+                    <span class="tab-icon">🎯</span>Price Proposal
+                </button>
             </div>
         </div>
 
@@ -266,11 +269,12 @@
                                 <th class="text-right">Avg Qty/Month</th>
                                 <th class="text-center">Months Inactive</th>
                                 <th>Status</th>
+                                <th class="text-center">Action</th>
                             </tr>
                         </thead>
                         <tbody id="droppedBody">
                             <tr>
-                                <td colspan="8" class="empty-msg">Loading data...</td>
+                                <td colspan="9" class="empty-msg">Loading data...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -1717,6 +1721,203 @@
                     <div class="itemlookup-feature-chip">📅 Date History</div>
                     <div class="itemlookup-feature-chip">💰 Cost vs Price</div>
                     <div class="itemlookup-feature-chip">📊 Markup Charts</div>
+                </div>
+            </div>
+        </div>
+        <!-- END MARGIN CHECK TAB -->
+
+        <!-- ====== PRICE PROPOSAL TAB ====== -->
+        <div id="tab-price-proposal" class="tab-content">
+            <!-- Header -->
+            <div class="section-header-wrap">
+                <div>
+                    <h2 class="section-title">🎯 Client Win-Back Price Proposal</h2>
+                    <p class="section-subtitle">Identify items clients stopped buying and generate targeted price proposals based on real-time procurement costs and custom target margins.</p>
+                </div>
+            </div>
+
+            <!-- Strategy & Controls Box -->
+            <div class="proposal-controls-panel">
+                <div class="proposal-controls-grid">
+                    <!-- Client Selector -->
+                    <div class="filter-group">
+                        <label class="filter-label">Select Client / Customer</label>
+                        <select class="filter-input" id="proposalCustomerSelect">
+                            <option value="ALL">All Clients (Summary)</option>
+                        </select>
+                    </div>
+
+                    <!-- Inactive Threshold -->
+                    <div class="filter-group">
+                        <label class="filter-label">Inactive Since</label>
+                        <select class="filter-input" id="proposalMonthsFilter">
+                            <option value="1">1+ Month Inactive</option>
+                            <option value="2" selected>2+ Months Inactive</option>
+                            <option value="3">3+ Months Inactive</option>
+                            <option value="6">6+ Months Inactive (Lost)</option>
+                        </select>
+                    </div>
+
+                    <!-- Search Filter -->
+                    <div class="filter-group">
+                        <label class="filter-label">Search Item / Code</label>
+                        <input type="text" class="filter-input" id="proposalSearchInput" placeholder="Filter by name, code, pack..." autocomplete="off">
+                    </div>
+
+                    <!-- Pricing Strategy -->
+                    <div class="filter-group">
+                        <label class="filter-label">Pricing Strategy</label>
+                        <select class="filter-input" id="proposalStrategyMode">
+                            <option value="target_margin" selected>Target Gross Margin %</option>
+                            <option value="markup_cost">Cost Markup %</option>
+                            <option value="match_previous">Match Historical Margin %</option>
+                            <option value="discount_old">Discount off Last Selling Price %</option>
+                        </select>
+                    </div>
+
+                    <!-- Percentage Input -->
+                    <div class="filter-group">
+                        <label class="filter-label" id="proposalStrategyValLabel">Target Margin %</label>
+                        <div class="proposal-input-pct-wrap">
+                            <input type="number" class="filter-input" id="proposalStrategyValue" value="20" min="0" max="300" step="0.5">
+                            <span class="pct-addon">%</span>
+                        </div>
+                    </div>
+
+                    <!-- Rounding Option -->
+                    <div class="filter-group">
+                        <label class="filter-label">Round Prices To</label>
+                        <select class="filter-input" id="proposalRoundingSelect">
+                            <option value="exact">Exact (No rounding)</option>
+                            <option value="50">Nearest 50</option>
+                            <option value="100" selected>Nearest 100</option>
+                            <option value="500">Nearest 500</option>
+                            <option value="1000">Nearest 1,000</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Presets & Actions Bar -->
+                <div class="proposal-actions-bar">
+                    <div class="proposal-presets-wrap">
+                        <span class="preset-label">Quick Margin Presets:</span>
+                        <button type="button" class="preset-chip" data-pct="10">10%</button>
+                        <button type="button" class="preset-chip" data-pct="15">15%</button>
+                        <button type="button" class="preset-chip active" data-pct="20">20%</button>
+                        <button type="button" class="preset-chip" data-pct="25">25%</button>
+                        <button type="button" class="preset-chip" data-pct="30">30%</button>
+                    </div>
+
+                    <div class="proposal-buttons-group">
+                        <button type="button" class="btn btn-secondary" id="proposalResetPricesBtn" title="Reset edited prices to formula">
+                            <span>🔄</span> Reset Prices
+                        </button>
+                        <button type="button" class="btn btn-secondary" id="proposalExportCsvBtn">
+                            <span>📥</span> Export CSV
+                        </button>
+                        <button type="button" class="btn btn-primary" id="proposalPrintBtn">
+                            <span>🖨️</span> Quotation / Print
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- KPI Cards -->
+            <div class="kpi-grid proposal-kpi-grid">
+                <div class="kpi-card">
+                    <div class="kpi-icon-wrap">📦</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Stopped Items</div>
+                        <div class="kpi-value" id="proposalKpiItemCount">0</div>
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-icon-wrap">📊</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Hist. Monthly Qty</div>
+                        <div class="kpi-value" id="proposalKpiVolume">0</div>
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-icon-wrap">💵</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Est. Monthly Revenue</div>
+                        <div class="kpi-value highlight-green" id="proposalKpiRevenue">0</div>
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-icon-wrap">📈</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Avg Proposal Margin</div>
+                        <div class="kpi-value highlight-cyan" id="proposalKpiAvgMargin">0.0%</div>
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-icon-wrap">🏷️</div>
+                    <div class="kpi-info">
+                        <div class="kpi-label">Competitive Edge</div>
+                        <div class="kpi-value highlight-amber" id="proposalKpiCompetitive">0 Cheaper</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Proposal Table Container -->
+            <div class="table-container proposal-table-container">
+                <div class="proposal-table-header-info">
+                    <span class="table-badge" id="proposalItemsBadge">0 items displayed</span>
+                    <span class="table-hint">💡 Tip: You can directly edit any <strong>Proposed Price</strong> cell below.</span>
+                </div>
+                <div class="table-scroll">
+                    <table class="data-table proposal-table" id="proposalTable">
+                        <thead>
+                            <tr>
+                                <th class="text-center" style="width: 40px;">#</th>
+                                <th id="thProposalCustomer">Client</th>
+                                <th>Item Code</th>
+                                <th>Item Name</th>
+                                <th>Pack</th>
+                                <th>Last Active</th>
+                                <th class="text-center">Inactive</th>
+                                <th class="text-right">Avg Qty/Mo</th>
+                                <th class="text-right">Last Selling Price</th>
+                                <th class="text-right">Latest Cost (D1)</th>
+                                <th class="text-right">Old Margin</th>
+                                <th class="text-right" style="min-width: 140px;">Proposed Price</th>
+                                <th class="text-right">New Margin</th>
+                                <th class="text-center">Price Change</th>
+                                <th class="text-right">Est. Monthly Value</th>
+                            </tr>
+                        </thead>
+                        <tbody id="proposalTableBody">
+                            <tr>
+                                <td colspan="15" class="empty-msg">Loading price proposal data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <!-- END PRICE PROPOSAL TAB -->
+
+        <!-- Client Quotation Printable Modal -->
+        <div id="proposalQuotationModal" class="modal-backdrop" style="display: none;">
+            <div class="modal-dialog modal-xl proposal-quotation-dialog">
+                <div class="modal-header no-print">
+                    <div class="modal-title-wrap">
+                        <h3 class="modal-title">📋 Official Price Proposal Quotation</h3>
+                        <div class="modal-subtitles">Ready to review and print or save as PDF for client</div>
+                    </div>
+                    <div class="modal-actions-wrap">
+                        <button type="button" class="btn btn-primary" onclick="window.print()">🖨️ Print / Save as PDF</button>
+                        <button type="button" class="modal-close-btn" id="proposalModalCloseBtn" title="Close">✕</button>
+                    </div>
+                </div>
+                <div class="modal-body proposal-print-sheet" id="proposalPrintSheet">
+                    <!-- Dynamic Printable Quotation Sheet Content -->
                 </div>
             </div>
         </div>
