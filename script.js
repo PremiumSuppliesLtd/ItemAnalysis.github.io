@@ -555,7 +555,7 @@ function populateSelect(id, options, defaultValue, defaultLabel) {
 
 // ===== RENDER ROUTER =====
 function renderCurrentTab() {
-    if (rawData.length === 0 && currentTab !== 'salesintel' && currentTab !== 'itemlookup' && currentTab !== 'margincheck' && currentTab !== 'supplier-reorder') return;
+    if (rawData.length === 0 && currentTab !== 'salesintel' && currentTab !== 'itemlookup' && currentTab !== 'margincheck' && currentTab !== 'supplier-reorder' && currentTab !== 'price-proposal') return;
     switch (currentTab) {
         case 'overview': renderOverview(); break;
         case 'dropped': renderDropped(); break;
@@ -569,6 +569,7 @@ function renderCurrentTab() {
         case 'salesintel': renderSalesIntel(); break;
         case 'itemlookup': initItemLookupTab(); break;
         case 'margincheck': initMarginCheckTab(); break;
+        case 'price-proposal': initPriceProposalTab(); break;
     }
 }
 
@@ -794,7 +795,7 @@ function renderDropped() {
     // Render table
     const tbody = document.getElementById('droppedBody');
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">No dropped items found matching your filters</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-msg">No dropped items found matching your filters</td></tr>';
         return;
     }
 
@@ -802,6 +803,7 @@ function renderDropped() {
         const statusClass = d.monthsInactive >= 6 ? 'stopped' : d.monthsInactive >= 3 ? 'declining' : 'new';
         const statusText = d.monthsInactive >= 6 ? '🔴 Lost' : d.monthsInactive >= 3 ? '🟡 At Risk' : '🟠 Recently Stopped';
         const monthBadgeClass = d.monthsInactive >= 6 ? 'critical' : d.monthsInactive >= 3 ? 'warning' : 'ok';
+        const safeCust = escapeHtml(d.customer).replace(/'/g, "\\'");
 
         return `<tr style="--row-index: ${i}">
             <td class="text-center">${i + 1}</td>
@@ -812,6 +814,11 @@ function renderDropped() {
             <td class="text-right">${d.avgQtyPerMonth.toFixed(1)}</td>
             <td class="text-center"><span class="months-badge ${monthBadgeClass}">${d.monthsInactive}</span></td>
             <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+            <td class="text-center">
+                <button type="button" class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px; white-space: nowrap;" onclick="openProposalForCustomer('${safeCust}')" title="Generate tailored price proposal for ${escapeHtml(d.customer)}">
+                    🎯 Propose Price
+                </button>
+            </td>
         </tr>`;
     }).join('');
 }
@@ -1376,6 +1383,8 @@ async function fetchReorderData() {
             renderReorder();
         } else if (currentTab === 'supplier-reorder') {
             renderSupplierSmartReorder();
+        } else if (currentTab === 'price-proposal') {
+            initPriceProposalTab();
         }
     } catch (err) {
         console.error('Error fetching reorder data:', err);
@@ -1970,6 +1979,8 @@ async function fetchSalesData() {
             renderSalesIntel();
         } else if (currentTab === 'supplier-reorder') {
             renderSupplierSmartReorder();
+        } else if (currentTab === 'price-proposal') {
+            initPriceProposalTab();
         }
     } catch (err) {
         console.error('Error fetching sales data:', err);
@@ -5933,6 +5944,795 @@ function printSupplierReorderPO() {
     window.print();
 }
 
+// ==========================================================================
+// 🎯 CLIENT WIN-BACK PRICE PROPOSAL ENGINE
+// ==========================================================================
 
+let proposalCustomer = 'ALL';
+let proposalMonthsMin = 2;
+let proposalSearchQuery = '';
+let proposalStrategyMode = 'target_margin'; // 'target_margin', 'markup_cost', 'match_previous', 'discount_old'
+let proposalStrategyValue = 20;
+let proposalRounding = '100';
+let proposalCustomOverrides = {}; // key (customer + '___' + masterCode) -> manual price
+let proposalItems = [];
+let proposalTabInitialized = false;
 
+// Data2 Indexing cache
+let proposalD2Indexed = false;
+let proposalMasterToD2 = {};   // masterNorm -> { itemCode, itemName, packing }
+let proposalCodeToD2 = {};     // codeNorm -> { itemCode, itemName, packing, masterCode }
+let proposalNameToD2 = {};     // nameNorm -> { itemCode, itemName, packing, masterCode }
+let proposalCustLastSale = {}; // (custNorm + '___' + masterNorm) -> { unitPrice, date, month, year, itemName, packing, itemCode }
+let proposalItemLastSale = {}; // masterNorm -> { unitPrice, date, month, year, itemName, packing, itemCode }
 
+// ── Tab Lifecycle Router ──
+function initPriceProposalTab() {
+    // If Item Analysis data isn't loaded yet
+    if (!rawData || rawData.length === 0 || !processedData || !processedData.droppedItems) {
+        const tbody = document.getElementById('proposalTableBody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="15" class="empty-msg">Waiting for Item Analysis data to load...</td></tr>';
+        return;
+    }
+
+    // Index Data2 if available and not yet indexed
+    if (!proposalD2Indexed && salesRawData && salesRawData.length > 0) {
+        indexSalesDataForProposal();
+    }
+
+    // Ensure Data1 cost map is built
+    if (Object.keys(itemLookupCostMap).length === 0 && purchaseData && purchaseData.length > 0) {
+        buildItemLookupCostMap();
+    }
+
+    // Populate customer dropdown
+    populateProposalCustomerDropdown();
+
+    // Wire up events once
+    if (!proposalTabInitialized) {
+        setupProposalEventListeners();
+        proposalTabInitialized = true;
+    }
+
+    // Render table and KPIs
+    renderPriceProposal();
+}
+
+// ── Index Data2 Sales Data for Fast Linking ──
+function indexSalesDataForProposal() {
+    if (!salesRawData || salesRawData.length === 0) return;
+
+    proposalMasterToD2 = {};
+    proposalCodeToD2 = {};
+    proposalNameToD2 = {};
+    proposalCustLastSale = {};
+    proposalItemLastSale = {};
+
+    const sHeaders = Object.keys(salesRawData[0]);
+    const sMasterKey = sHeaders.find(h => h.toUpperCase().includes('MASTER.ITEM_CODE') || (h.toUpperCase().includes('MASTER') && h.toUpperCase().includes('ITEM'))) || null;
+    const sItemCodeKey = sHeaders.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) || sHeaders.find(h => h.toLowerCase().includes('item_code')) || sHeaders[1];
+    const sItemDesKey = sHeaders.find(h => h.toLowerCase().includes('item_des') || h.toUpperCase().includes('ITEM NAME')) || sHeaders[3];
+    const sPackingKey = sHeaders.find(h => h.toLowerCase().includes('packing') || h.toLowerCase().includes('pack')) || sHeaders[4];
+    const sPriceKey = sHeaders.find(h => h.toLowerCase().includes('unit_price') || h.toLowerCase().includes('price')) || sHeaders[2];
+    const sCustKey = sHeaders.find(h => h.toLowerCase().includes('cust_name') || h.toLowerCase().includes('customer')) || sHeaders[7];
+    const sDateKey = sHeaders.find(h => h.toLowerCase().includes('year - copy') || h.toLowerCase().includes('year-copy') || h.toLowerCase().includes('date')) || null;
+    const sMonthKey = sHeaders.find(h => h.toUpperCase() === 'MONTH') || sHeaders[11];
+    const sYearKey = sHeaders.find(h => h.toLowerCase().includes('year.1') || h.toLowerCase().includes('year')) || sHeaders[10];
+
+    salesRawData.forEach(row => {
+        const rawMaster = sMasterKey ? (row[sMasterKey] || '').toString().trim() : '';
+        const rawCode = (row[sItemCodeKey] || '').toString().trim();
+        const rawDes = (row[sItemDesKey] || '').toString().trim();
+        const rawPack = (row[sPackingKey] || '').toString().trim();
+        const rawCust = (row[sCustKey] || '').toString().trim();
+        const rawPrice = parseFloat((row[sPriceKey] || '0').toString().replace(/,/g, '')) || 0;
+
+        const dateStr = sDateKey ? (row[sDateKey] || '').toString().trim() : '';
+        const month = parseInt((row[sMonthKey] || '0').toString()) || 0;
+        const year = parseInt((row[sYearKey] || '0').toString()) || 0;
+
+        const masterNorm = rawMaster.toUpperCase();
+        const codeNorm = rawCode.toUpperCase();
+        const desNorm = rawDes.toUpperCase();
+        const custNorm = rawCust.toUpperCase();
+
+        const itemDetails = {
+            itemCode: rawCode,
+            itemName: rawDes || rawMaster,
+            packing: rawPack,
+            masterCode: rawMaster
+        };
+
+        if (masterNorm) {
+            if (!proposalMasterToD2[masterNorm] || (rawCode && !proposalMasterToD2[masterNorm].itemCode)) {
+                proposalMasterToD2[masterNorm] = itemDetails;
+            }
+        }
+        if (codeNorm) {
+            if (!proposalCodeToD2[codeNorm] || (rawDes && !proposalCodeToD2[codeNorm].itemName)) {
+                proposalCodeToD2[codeNorm] = itemDetails;
+            }
+        }
+        if (desNorm) {
+            if (!proposalNameToD2[desNorm] || (rawCode && !proposalNameToD2[desNorm].itemCode)) {
+                proposalNameToD2[desNorm] = itemDetails;
+            }
+        }
+
+        if (rawPrice > 0) {
+            const saleRecord = {
+                unitPrice: rawPrice,
+                date: dateStr,
+                month: month,
+                year: year,
+                itemName: rawDes,
+                packing: rawPack,
+                itemCode: rawCode,
+                masterCode: rawMaster
+            };
+
+            // Customer specific sale record
+            if (custNorm) {
+                if (masterNorm) proposalCustLastSale[custNorm + '___' + masterNorm] = saleRecord;
+                if (codeNorm) proposalCustLastSale[custNorm + '___' + codeNorm] = saleRecord;
+                if (desNorm) proposalCustLastSale[custNorm + '___' + desNorm] = saleRecord;
+            }
+
+            // General item sale record
+            if (masterNorm) proposalItemLastSale[masterNorm] = saleRecord;
+            if (codeNorm) proposalItemLastSale[codeNorm] = saleRecord;
+            if (desNorm) proposalItemLastSale[desNorm] = saleRecord;
+        }
+    });
+
+    proposalD2Indexed = true;
+}
+
+// ── Multi-Path Cost Resolver (Data1 & Reorder Sheet) ──
+function findItemCurrentCost(itemCode, masterCode, itemName) {
+    if (Object.keys(itemLookupCostMap).length === 0 && purchaseData && purchaseData.length > 0) {
+        buildItemLookupCostMap();
+    }
+
+    const codeNorm = (itemCode || '').trim().toLowerCase();
+    const masterNorm = (masterCode || '').trim().toLowerCase();
+    const nameNorm = (itemName || '').trim().toLowerCase();
+
+    // 1. Check itemLookupCostMap by itemCode
+    if (codeNorm && itemLookupCostMap[codeNorm] && itemLookupCostMap[codeNorm].pricePC > 0) {
+        return {
+            cost: itemLookupCostMap[codeNorm].pricePC,
+            date: itemLookupCostMap[codeNorm].date || '',
+            source: 'Data1'
+        };
+    }
+
+    // 2. Check itemLookupCostMap by masterCode or name
+    if (masterNorm && itemLookupCostMap[masterNorm] && itemLookupCostMap[masterNorm].pricePC > 0) {
+        return {
+            cost: itemLookupCostMap[masterNorm].pricePC,
+            date: itemLookupCostMap[masterNorm].date || '',
+            source: 'Data1'
+        };
+    }
+    if (nameNorm && itemLookupCostMap[nameNorm] && itemLookupCostMap[nameNorm].pricePC > 0) {
+        return {
+            cost: itemLookupCostMap[nameNorm].pricePC,
+            date: itemLookupCostMap[nameNorm].date || '',
+            source: 'Data1'
+        };
+    }
+
+    // 3. Check purchaseData directly (Data1)
+    if (purchaseData && purchaseData.length > 0) {
+        const pHeaders = Object.keys(purchaseData[0]);
+        const pDesc2Key = pHeaders.find(h => h.toUpperCase().includes('DESCRIPTION2') || h.toUpperCase().includes('MASTER.DESCRIPTION2'));
+        const pItemNameKey = pHeaders.find(h => h.toUpperCase().includes('ITEM NAME') || h.toUpperCase().replace(/[\s_]/g, '').includes('ITEMNAME'));
+        const pPricePCKey = pHeaders.find(h => h.toUpperCase().includes('PRICE PER PC') || h.toUpperCase().replace(/[\s_]/g, '').includes('PRICEPERPC'));
+        const pDateKey = pHeaders.find(h => h.toUpperCase().includes('TRAN_DATE') || h.toUpperCase().includes('DATE'));
+
+        for (let i = 0; i < purchaseData.length; i++) {
+            const row = purchaseData[i];
+            const desc2 = pDesc2Key ? (row[pDesc2Key] || '').toString().trim().toLowerCase() : '';
+            const pName = pItemNameKey ? (row[pItemNameKey] || '').toString().trim().toLowerCase() : '';
+
+            if ((masterNorm && desc2 === masterNorm) || (nameNorm && pName === nameNorm)) {
+                const cost = parseFloat((row[pPricePCKey] || '0').toString().replace(/,/g, '')) || 0;
+                if (cost > 0) {
+                    return {
+                        cost: cost,
+                        date: pDateKey ? (row[pDateKey] || '').toString().trim() : '',
+                        source: 'Data1'
+                    };
+                }
+            }
+        }
+    }
+
+    // 4. Fallback to reorderData (Reorder sheet COST)
+    if (reorderData && reorderData.length > 0) {
+        const rHeaders = Object.keys(reorderData[0]);
+        const rNameKey = rHeaders.find(h => h.toUpperCase().includes('ITEMNAM') || h.toUpperCase().includes('ITEM NAME'));
+        const rCostKey = rHeaders.find(h => h.toUpperCase() === 'COST');
+
+        if (rCostKey && rNameKey) {
+            for (let i = 0; i < reorderData.length; i++) {
+                const rName = (reorderData[i][rNameKey] || '').toString().trim().toLowerCase();
+                if ((nameNorm && rName.includes(nameNorm)) || (masterNorm && rName.includes(masterNorm))) {
+                    const cost = parseFloat((reorderData[i][rCostKey] || '0').toString().replace(/,/g, '')) || 0;
+                    if (cost > 0) {
+                        return {
+                            cost: cost,
+                            date: '',
+                            source: 'Reorder'
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    return { cost: 0, date: '', source: 'No Cost' };
+}
+
+// ── Formula Pricing Engine ──
+function computeProposalPrice(cost, lastSellingPrice, mode, val, roundMode) {
+    let price = 0;
+    const numVal = parseFloat(val) || 0;
+
+    if (mode === 'target_margin') {
+        const marginPct = Math.min(Math.max(numVal, 0), 95);
+        if (cost > 0) {
+            price = cost / (1 - (marginPct / 100));
+        } else if (lastSellingPrice > 0) {
+            price = lastSellingPrice;
+        }
+    } else if (mode === 'markup_cost') {
+        const markupPct = Math.max(numVal, 0);
+        if (cost > 0) {
+            price = cost * (1 + (markupPct / 100));
+        } else if (lastSellingPrice > 0) {
+            price = lastSellingPrice;
+        }
+    } else if (mode === 'match_previous') {
+        if (lastSellingPrice > 0 && cost > 0 && lastSellingPrice > cost) {
+            const histMargin = (lastSellingPrice - cost) / lastSellingPrice;
+            price = cost / (1 - Math.min(histMargin, 0.90));
+        } else if (cost > 0) {
+            price = cost * 1.20; // 20% default markup
+        } else {
+            price = lastSellingPrice;
+        }
+    } else if (mode === 'discount_old') {
+        const discountPct = Math.min(Math.max(numVal, 0), 80);
+        if (lastSellingPrice > 0) {
+            price = lastSellingPrice * (1 - (discountPct / 100));
+            if (cost > 0 && price < cost * 1.02) {
+                price = cost * 1.02;
+            }
+        } else if (cost > 0) {
+            price = cost * 1.15;
+        }
+    }
+
+    // Apply Rounding
+    if (price > 0) {
+        if (roundMode === '50') {
+            price = Math.round(price / 50) * 50;
+        } else if (roundMode === '100') {
+            price = Math.round(price / 100) * 100;
+        } else if (roundMode === '500') {
+            price = Math.round(price / 500) * 500;
+        } else if (roundMode === '1000') {
+            price = Math.round(price / 1000) * 1000;
+        } else {
+            price = Math.round(price * 100) / 100;
+        }
+    }
+
+    return Math.max(0, price);
+}
+
+// ── Populate Customer Dropdown ──
+function populateProposalCustomerDropdown() {
+    const select = document.getElementById('proposalCustomerSelect');
+    if (!select || !processedData.droppedItems) return;
+
+    // Count dropped items per customer
+    const custItemCounts = {};
+    processedData.droppedItems.forEach(d => {
+        if (d.monthsInactive >= proposalMonthsMin) {
+            custItemCounts[d.customer] = (custItemCounts[d.customer] || 0) + 1;
+        }
+    });
+
+    const customers = Object.keys(custItemCounts).sort();
+    const currentVal = select.value || proposalCustomer;
+
+    let html = `<option value="ALL">All Clients (${customers.length} with dropped items)</option>`;
+    customers.forEach(c => {
+        html += `<option value="${escapeHtml(c)}">${escapeHtml(c)} (${custItemCounts[c]} items dropped)</option>`;
+    });
+
+    select.innerHTML = html;
+
+    if (customers.includes(currentVal)) {
+        select.value = currentVal;
+        proposalCustomer = currentVal;
+    } else {
+        select.value = 'ALL';
+        proposalCustomer = 'ALL';
+    }
+}
+
+// ── Main Renderer for Table & KPIs ──
+function renderPriceProposal() {
+    const tbody = document.getElementById('proposalTableBody');
+    if (!tbody || !processedData.droppedItems) return;
+
+    // Filter dropped items
+    let filtered = processedData.droppedItems.filter(d => d.monthsInactive >= proposalMonthsMin);
+
+    if (proposalCustomer !== 'ALL') {
+        filtered = filtered.filter(d => d.customer === proposalCustomer);
+    }
+
+    // Resolve details for each item
+    proposalItems = filtered.map(d => {
+        const masterCode = d.itemCode;
+        const masterNorm = masterCode.toUpperCase();
+        const custNorm = d.customer.toUpperCase();
+
+        // 1. Resolve Data2 item details
+        let d2Match = proposalMasterToD2[masterNorm] || proposalNameToD2[masterNorm] || proposalCodeToD2[masterNorm] || null;
+        let itemCode = d2Match ? d2Match.itemCode : masterCode;
+        let itemName = d2Match ? d2Match.itemName : masterCode;
+        let packing = d2Match ? d2Match.packing : '';
+
+        // 2. Resolve Last Selling Price to this client
+        let saleMatch = proposalCustLastSale[custNorm + '___' + masterNorm] ||
+                        proposalCustLastSale[custNorm + '___' + (itemCode ? itemCode.toUpperCase() : '')] ||
+                        proposalItemLastSale[masterNorm] ||
+                        proposalItemLastSale[(itemCode ? itemCode.toUpperCase() : '')] || null;
+
+        let lastSellingPrice = saleMatch ? saleMatch.unitPrice : 0;
+        if (saleMatch) {
+            if (saleMatch.packing && !packing) packing = saleMatch.packing;
+            if (saleMatch.itemName && (!itemName || itemName === masterCode)) itemName = saleMatch.itemName;
+            if (saleMatch.itemCode && (!itemCode || itemCode === masterCode)) itemCode = saleMatch.itemCode;
+        }
+
+        // 3. Resolve Current Cost from Data1 / Reorder
+        const costInfo = findItemCurrentCost(itemCode, masterCode, itemName);
+        const cost = costInfo.cost;
+
+        // 4. Proposed Price & Override handling
+        const overrideKey = d.customer + '___' + masterCode;
+        const hasOverride = proposalCustomOverrides[overrideKey] !== undefined;
+        const proposedPrice = hasOverride ?
+            proposalCustomOverrides[overrideKey] :
+            computeProposalPrice(cost, lastSellingPrice, proposalStrategyMode, proposalStrategyValue, proposalRounding);
+
+        // 5. Margin calculations
+        const oldMargin = (lastSellingPrice > 0 && cost > 0) ? ((lastSellingPrice - cost) / lastSellingPrice * 100) : null;
+        const newMargin = (proposedPrice > 0 && cost > 0) ? ((proposedPrice - cost) / proposedPrice * 100) : null;
+        const diffVal = (proposedPrice > 0 && lastSellingPrice > 0) ? (proposedPrice - lastSellingPrice) : 0;
+        const diffPct = (proposedPrice > 0 && lastSellingPrice > 0) ? (diffVal / lastSellingPrice * 100) : null;
+        const monthlyEstValue = d.avgQtyPerMonth * proposedPrice;
+
+        return {
+            customer: d.customer,
+            masterCode,
+            itemCode,
+            itemName,
+            packing,
+            lastMonth: d.lastMonth,
+            monthsInactive: d.monthsInactive,
+            avgQtyPerMonth: d.avgQtyPerMonth,
+            lastSellingPrice,
+            cost,
+            costDate: costInfo.date,
+            costSource: costInfo.source,
+            oldMargin,
+            proposedPrice,
+            newMargin,
+            diffVal,
+            diffPct,
+            monthlyEstValue,
+            overrideKey,
+            hasOverride
+        };
+    });
+
+    // Apply Search Filter if any
+    let displayItems = proposalItems;
+    if (proposalSearchQuery) {
+        displayItems = displayItems.filter(item =>
+            item.itemName.toLowerCase().includes(proposalSearchQuery) ||
+            item.itemCode.toLowerCase().includes(proposalSearchQuery) ||
+            item.masterCode.toLowerCase().includes(proposalSearchQuery) ||
+            item.packing.toLowerCase().includes(proposalSearchQuery) ||
+            item.customer.toLowerCase().includes(proposalSearchQuery)
+        );
+    }
+
+    // Sort: highest historical monthly volume first
+    displayItems.sort((a, b) => b.avgQtyPerMonth - a.avgQtyPerMonth);
+
+    // Update KPI Cards
+    const totalItemsCount = displayItems.length;
+    const totalMonthlyQty = displayItems.reduce((s, i) => s + i.avgQtyPerMonth, 0);
+    const totalMonthlyRev = displayItems.reduce((s, i) => s + i.monthlyEstValue, 0);
+
+    const validNewMargins = displayItems.filter(i => i.newMargin !== null);
+    const avgNewMargin = validNewMargins.length > 0 ?
+        (validNewMargins.reduce((s, i) => s + i.newMargin, 0) / validNewMargins.length) : 0;
+
+    const cheaperCount = displayItems.filter(i => i.diffVal < 0).length;
+    const higherCount = displayItems.filter(i => i.diffVal > 0).length;
+
+    setText('proposalKpiItemCount', formatNumber(totalItemsCount));
+    setText('proposalKpiVolume', formatNumber(totalMonthlyQty) + ' pcs');
+    setText('proposalKpiRevenue', formatSalesMoney(totalMonthlyRev));
+    setText('proposalKpiAvgMargin', avgNewMargin.toFixed(1) + '%');
+    setText('proposalKpiCompetitive', `${cheaperCount} Cheaper (${higherCount} Higher)`);
+    setText('proposalItemsBadge', `${displayItems.length} items displayed`);
+
+    // Render Table Rows
+    if (displayItems.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="15" class="empty-msg">No stopped items found for the selected criteria.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = displayItems.map((item, idx) => {
+        // Old Margin Badge
+        let oldMarginBadge = '<span class="text-muted">—</span>';
+        if (item.oldMargin !== null) {
+            const mClass = item.oldMargin >= 20 ? 'margin-good' : (item.oldMargin >= 10 ? 'margin-fair' : 'margin-low');
+            oldMarginBadge = `<span class="margin-badge ${mClass}">${item.oldMargin.toFixed(1)}%</span>`;
+        }
+
+        // New Margin Badge
+        let newMarginBadge = '<span class="text-muted">—</span>';
+        if (item.newMargin !== null) {
+            const mClass = item.newMargin >= 20 ? 'margin-good' : (item.newMargin >= 10 ? 'margin-fair' : 'margin-low');
+            newMarginBadge = `<span class="margin-badge ${mClass}">${item.newMargin.toFixed(1)}%</span>`;
+        }
+
+        // Price Diff Badge
+        let diffBadge = '<span class="diff-badge diff-equal">New</span>';
+        if (item.lastSellingPrice > 0) {
+            if (item.diffVal < 0) {
+                diffBadge = `<span class="diff-badge diff-cheaper" title="Client saves ${formatMoney(Math.abs(item.diffVal))}">↓ ${Math.abs(item.diffPct).toFixed(1)}%</span>`;
+            } else if (item.diffVal > 0) {
+                diffBadge = `<span class="diff-badge diff-higher" title="Cost increase requires +${formatMoney(item.diffVal)}">↑ +${item.diffPct.toFixed(1)}%</span>`;
+            } else {
+                diffBadge = `<span class="diff-badge diff-equal">= Same</span>`;
+            }
+        }
+
+        // Inactive badge
+        const inactiveBadgeClass = item.monthsInactive >= 6 ? 'critical' : (item.monthsInactive >= 3 ? 'warning' : 'ok');
+
+        return `<tr>
+            <td class="text-center text-muted">${idx + 1}</td>
+            <td class="customer-name" title="${escapeHtml(item.customer)}">${escapeHtml(item.customer)}</td>
+            <td class="code-col" style="font-family: monospace; font-size: 12px;">${escapeHtml(item.itemCode || item.masterCode)}</td>
+            <td class="item-name" title="${escapeHtml(item.masterCode)}">
+                <strong>${escapeHtml(item.itemName)}</strong>
+                ${item.masterCode !== item.itemName ? `<br><small class="text-muted">${escapeHtml(item.masterCode)}</small>` : ''}
+            </td>
+            <td><span class="pack-badge">${escapeHtml(item.packing || '1 PC')}</span></td>
+            <td>${formatMonthLabel(item.lastMonth)}</td>
+            <td class="text-center"><span class="months-badge ${inactiveBadgeClass}">${item.monthsInactive}m</span></td>
+            <td class="text-right font-medium">${item.avgQtyPerMonth.toFixed(1)}</td>
+            <td class="text-right">${item.lastSellingPrice > 0 ? formatMoney(item.lastSellingPrice) : '<span class="text-muted">—</span>'}</td>
+            <td class="text-right">
+                ${item.cost > 0 ? formatMoney(item.cost) : '<span class="text-muted">—</span>'}
+                ${item.costSource ? `<span class="cost-subtext">${item.costSource} ${item.costDate ? '(' + item.costDate + ')' : ''}</span>` : ''}
+            </td>
+            <td class="text-right">${oldMarginBadge}</td>
+            <td class="text-right">
+                <input
+                    type="number"
+                    step="50"
+                    class="proposal-price-input ${item.hasOverride ? 'is-manual-override' : ''}"
+                    data-override-key="${item.overrideKey}"
+                    value="${item.proposedPrice > 0 ? Math.round(item.proposedPrice) : 0}"
+                    title="Click to manually edit proposed price"
+                >
+            </td>
+            <td class="text-right">${newMarginBadge}</td>
+            <td class="text-center">${diffBadge}</td>
+            <td class="text-right font-bold" style="color: #38bdf8;">${formatSalesMoney(item.monthlyEstValue)}</td>
+        </tr>`;
+    }).join('');
+
+    // Attach inline edit handlers to price inputs
+    tbody.querySelectorAll('.proposal-price-input').forEach(input => {
+        input.addEventListener('change', (e) => {
+            const key = e.target.getAttribute('data-override-key');
+            const newPrice = parseFloat(e.target.value) || 0;
+            if (newPrice > 0) {
+                proposalCustomOverrides[key] = newPrice;
+            } else {
+                delete proposalCustomOverrides[key];
+            }
+            renderPriceProposal();
+        });
+    });
+}
+
+// ── Event Listeners Setup ──
+function setupProposalEventListeners() {
+    // Customer selector
+    const custSelect = document.getElementById('proposalCustomerSelect');
+    if (custSelect) {
+        custSelect.addEventListener('change', (e) => {
+            proposalCustomer = e.target.value;
+            renderPriceProposal();
+        });
+    }
+
+    // Inactive months selector
+    const monthsSelect = document.getElementById('proposalMonthsFilter');
+    if (monthsSelect) {
+        monthsSelect.addEventListener('change', (e) => {
+            proposalMonthsMin = parseInt(e.target.value) || 2;
+            populateProposalCustomerDropdown();
+            renderPriceProposal();
+        });
+    }
+
+    // Search filter
+    const searchInput = document.getElementById('proposalSearchInput');
+    if (searchInput) {
+        searchInput.addEventListener('input', debounce((e) => {
+            proposalSearchQuery = (e.target.value || '').trim().toLowerCase();
+            renderPriceProposal();
+        }, 250));
+    }
+
+    // Pricing Strategy mode
+    const modeSelect = document.getElementById('proposalStrategyMode');
+    const valLabel = document.getElementById('proposalStrategyValLabel');
+    if (modeSelect) {
+        modeSelect.addEventListener('change', (e) => {
+            proposalStrategyMode = e.target.value;
+            if (valLabel) {
+                if (proposalStrategyMode === 'target_margin') valLabel.textContent = 'Target Margin %';
+                else if (proposalStrategyMode === 'markup_cost') valLabel.textContent = 'Cost Markup %';
+                else if (proposalStrategyMode === 'match_previous') valLabel.textContent = 'Min Margin Fallback %';
+                else if (proposalStrategyMode === 'discount_old') valLabel.textContent = 'Discount off Old %';
+            }
+            renderPriceProposal();
+        });
+    }
+
+    // Percentage value input
+    const valInput = document.getElementById('proposalStrategyValue');
+    if (valInput) {
+        valInput.addEventListener('input', debounce((e) => {
+            proposalStrategyValue = parseFloat(e.target.value) || 20;
+            // Update preset buttons state
+            document.querySelectorAll('.preset-chip').forEach(c => {
+                c.classList.toggle('active', parseFloat(c.getAttribute('data-pct')) === proposalStrategyValue);
+            });
+            renderPriceProposal();
+        }, 200));
+    }
+
+    // Quick margin preset chips
+    document.querySelectorAll('.preset-chip').forEach(chip => {
+        chip.addEventListener('click', (e) => {
+            const pct = parseFloat(e.currentTarget.getAttribute('data-pct')) || 20;
+            proposalStrategyValue = pct;
+            if (valInput) valInput.value = pct;
+            document.querySelectorAll('.preset-chip').forEach(c => c.classList.remove('active'));
+            e.currentTarget.classList.add('active');
+            renderPriceProposal();
+        });
+    });
+
+    // Rounding selector
+    const roundSelect = document.getElementById('proposalRoundingSelect');
+    if (roundSelect) {
+        roundSelect.addEventListener('change', (e) => {
+            proposalRounding = e.target.value;
+            renderPriceProposal();
+        });
+    }
+
+    // Reset Custom Prices button
+    const resetBtn = document.getElementById('proposalResetPricesBtn');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', () => {
+            proposalCustomOverrides = {};
+            showToast('All manually edited prices have been reset to formula.', 'info');
+            renderPriceProposal();
+        });
+    }
+
+    // Export CSV button
+    const exportBtn = document.getElementById('proposalExportCsvBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', exportProposalCsv);
+    }
+
+    // Quotation / Print button
+    const printBtn = document.getElementById('proposalPrintBtn');
+    if (printBtn) {
+        printBtn.addEventListener('click', openProposalQuotationModal);
+    }
+
+    // Close Modal button
+    const closeBtn = document.getElementById('proposalModalCloseBtn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            const modal = document.getElementById('proposalQuotationModal');
+            if (modal) modal.style.display = 'none';
+        });
+    }
+}
+
+// ── Export Proposal to CSV ──
+function exportProposalCsv() {
+    if (!proposalItems || proposalItems.length === 0) {
+        showToast('No proposal items to export.', 'warning');
+        return;
+    }
+
+    const headers = [
+        'Customer',
+        'Item Code',
+        'Master Code',
+        'Item Name',
+        'Packing',
+        'Last Active Month',
+        'Months Inactive',
+        'Hist Avg Qty Per Month',
+        'Last Selling Price',
+        'Latest Cost',
+        'Cost Source',
+        'Old Margin %',
+        'Proposed Offer Price',
+        'New Margin %',
+        'Price Difference',
+        'Price Difference %',
+        'Est Monthly Value'
+    ];
+
+    const rows = proposalItems.map(i => [
+        `"${(i.customer || '').replace(/"/g, '""')}"`,
+        `"${(i.itemCode || '').replace(/"/g, '""')}"`,
+        `"${(i.masterCode || '').replace(/"/g, '""')}"`,
+        `"${(i.itemName || '').replace(/"/g, '""')}"`,
+        `"${(i.packing || '').replace(/"/g, '""')}"`,
+        `"${i.lastMonth || ''}"`,
+        i.monthsInactive || 0,
+        (i.avgQtyPerMonth || 0).toFixed(2),
+        (i.lastSellingPrice || 0).toFixed(2),
+        (i.cost || 0).toFixed(2),
+        `"${i.costSource || ''}"`,
+        i.oldMargin !== null ? i.oldMargin.toFixed(1) : '',
+        (i.proposedPrice || 0).toFixed(2),
+        i.newMargin !== null ? i.newMargin.toFixed(1) : '',
+        (i.diffVal || 0).toFixed(2),
+        i.diffPct !== null ? i.diffPct.toFixed(1) : '',
+        (i.monthlyEstValue || 0).toFixed(2)
+    ]);
+
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    const clientName = proposalCustomer !== 'ALL' ? proposalCustomer.replace(/[^a-zA-Z0-9]/g, '_') : 'All_Clients';
+
+    link.setAttribute('href', url);
+    link.setAttribute('download', `Price_Proposal_${clientName}_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('Proposal CSV successfully downloaded!', 'success');
+}
+
+// ── Open Formal Printable Client Quotation ──
+function openProposalQuotationModal() {
+    if (!proposalItems || proposalItems.length === 0) {
+        showToast('No items available for quotation.', 'warning');
+        return;
+    }
+
+    const modal = document.getElementById('proposalQuotationModal');
+    const sheet = document.getElementById('proposalPrintSheet');
+    if (!modal || !sheet) return;
+
+    const targetClient = proposalCustomer !== 'ALL' ? proposalCustomer : 'VALUED CLIENT';
+    const todayStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const expiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+    let tableRowsHtml = proposalItems.map((item, idx) => {
+        let savingsBadge = '';
+        if (item.diffVal < 0) {
+            savingsBadge = `<span class="quote-savings-badge">Save ${Math.abs(item.diffPct).toFixed(1)}%</span>`;
+        }
+
+        return `<tr>
+            <td style="width: 30px; text-align: center;">${idx + 1}</td>
+            <td style="font-family: monospace; font-size: 11px;">${escapeHtml(item.itemCode || item.masterCode)}</td>
+            <td><strong>${escapeHtml(item.itemName)}</strong></td>
+            <td>${escapeHtml(item.packing || '1 PC')}</td>
+            <td class="text-right">${item.lastSellingPrice > 0 ? formatMoney(item.lastSellingPrice) : '—'}</td>
+            <td class="text-right quote-price-special">${formatMoney(item.proposedPrice)}</td>
+            <td class="text-right">${savingsBadge}</td>
+        </tr>`;
+    }).join('');
+
+    sheet.innerHTML = `
+        <div class="quote-header">
+            <div>
+                <h1 class="quote-title">MEGAMART SPECIAL PRICE PROPOSAL</h1>
+                <p class="quote-subtitle">Exclusive Commercial Offer & Win-Back Pricing</p>
+            </div>
+            <div class="quote-meta-box">
+                <div><strong>Quotation Ref:</strong> MM-PR-${Date.now().toString().slice(-6)}</div>
+                <div><strong>Date:</strong> ${todayStr}</div>
+                <div><strong>Validity:</strong> 30 Days (Until ${expiryDate})</div>
+            </div>
+        </div>
+
+        <div class="quote-client-card">
+            <div>
+                <div class="quote-client-name">Prepared For: ${escapeHtml(targetClient)}</div>
+                <div class="quote-client-sub">Specially formulated pricing on your preferred high-demand product lines</div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 13px; font-weight: 700; color: #0f172a;">${proposalItems.length} Products Included</div>
+            </div>
+        </div>
+
+        <table class="quote-table">
+            <thead>
+                <tr>
+                    <th style="text-align: center;">#</th>
+                    <th>Item Code</th>
+                    <th>Item Description</th>
+                    <th>Packing</th>
+                    <th class="text-right">Previous Price</th>
+                    <th class="text-right">Special Proposed Price</th>
+                    <th class="text-right">Benefit</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${tableRowsHtml}
+            </tbody>
+        </table>
+
+        <div class="quote-footer">
+            <h5>Terms & Conditions:</h5>
+            <ol style="margin: 0; padding-left: 18px;">
+                <li>Prices quoted are based on current procurement rates and are valid for orders placed within the validity period.</li>
+                <li>Delivery schedules and payment terms remain as per your standard commercial account terms.</li>
+                <li>To confirm order placement or request adjustments, please contact your Megamart account manager.</li>
+            </ol>
+            <div style="margin-top: 24px; display: flex; justify-content: space-between; padding-top: 16px; border-top: 1px dashed #cbd5e1;">
+                <div>Account Manager: ___________________________</div>
+                <div>Client Acceptance: ___________________________</div>
+            </div>
+        </div>
+    `;
+
+    modal.style.display = 'flex';
+}
+
+// ── Quick-Launch Proposal from Dropped Items Tab ──
+function openProposalForCustomer(customerName) {
+    switchTab('price-proposal');
+    const select = document.getElementById('proposalCustomerSelect');
+    if (select && customerName) {
+        select.value = customerName;
+        proposalCustomer = customerName;
+    }
+    renderPriceProposal();
+}
