@@ -3971,3 +3971,420 @@ body::before {
     border: 1px solid rgba(148, 163, 184, 0.25);
 }
 
+/* ==========================================================================
+   🎯 PRICE PROPOSAL TAB STYLES
+   ========================================================================== */
+
+.proposal-controls-panel {
+    background: var(--surface-card, rgba(30, 41, 59, 0.7));
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 24px;
+    backdrop-filter: blur(16px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.proposal-controls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.proposal-input-pct-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.proposal-input-pct-wrap .filter-input {
+    padding-right: 36px;
+    font-weight: 600;
+}
+
+.proposal-input-pct-wrap .pct-addon {
+    position: absolute;
+    right: 12px;
+    font-weight: 700;
+    color: var(--accent-primary, #6366f1);
+    pointer-events: none;
+}
+
+.proposal-actions-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
+}
+
+.proposal-presets-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.preset-label {
+    font-size: 12px;
+    color: var(--text-muted, #94a3b8);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.preset-chip {
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary, #f1f5f9);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.preset-chip:hover {
+    background: rgba(99, 102, 241, 0.15);
+    border-color: var(--accent-primary, #6366f1);
+    color: #fff;
+}
+
+.preset-chip.active {
+    background: var(--accent-primary, #6366f1);
+    border-color: var(--accent-primary, #6366f1);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+}
+
+.proposal-buttons-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+/* Proposal KPI Strip */
+.proposal-kpi-grid {
+    margin-bottom: 24px;
+}
+
+.highlight-green {
+    color: #10b981 !important;
+}
+
+.highlight-cyan {
+    color: #06b6d4 !important;
+}
+
+.highlight-amber {
+    color: #f59e0b !important;
+}
+
+/* Proposal Table */
+.proposal-table-container {
+    background: var(--surface-card, rgba(30, 41, 59, 0.7));
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.proposal-table-header-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.table-badge {
+    padding: 4px 12px;
+    border-radius: 20px;
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    color: var(--accent-primary, #818cf8);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.table-hint {
+    font-size: 12px;
+    color: var(--text-muted, #94a3b8);
+}
+
+.proposal-table th {
+    white-space: nowrap;
+    font-size: 12px;
+}
+
+.proposal-table td {
+    vertical-align: middle;
+    font-size: 13px;
+}
+
+/* Price Input in Table */
+.proposal-price-input {
+    width: 110px;
+    padding: 6px 8px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(99, 102, 241, 0.4);
+    border-radius: 8px;
+    color: #38bdf8;
+    font-weight: 700;
+    text-align: right;
+    font-size: 13px;
+    transition: all 0.2s;
+}
+
+.proposal-price-input:focus {
+    outline: none;
+    border-color: #38bdf8;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
+    background: rgba(15, 23, 42, 0.9);
+}
+
+.proposal-price-input.is-manual-override {
+    border-color: #f59e0b;
+    color: #fbbf24;
+    background: rgba(245, 158, 11, 0.08);
+}
+
+/* Difference Badges */
+.diff-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.diff-cheaper {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.diff-equal {
+    background: rgba(148, 163, 184, 0.15);
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.diff-higher {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.diff-loss {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+/* Margin Badges */
+.margin-badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.margin-good {
+    color: #34d399;
+    background: rgba(16, 185, 129, 0.12);
+}
+
+.margin-fair {
+    color: #fbbf24;
+    background: rgba(245, 158, 11, 0.12);
+}
+
+.margin-low {
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.12);
+}
+
+/* Cost Source Tooltip/Subtext */
+.cost-subtext {
+    font-size: 10px;
+    color: var(--text-muted, #94a3b8);
+    display: block;
+}
+
+/* Quotation Print Modal */
+.proposal-quotation-dialog {
+    max-width: 900px;
+}
+
+.proposal-print-sheet {
+    background: #fff;
+    color: #1e293b;
+    padding: 36px 40px;
+    border-radius: 8px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.quote-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2px solid #0f172a;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+}
+
+.quote-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: #0f172a;
+    margin: 0 0 4px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.quote-subtitle {
+    font-size: 13px;
+    color: #64748b;
+    margin: 0;
+}
+
+.quote-meta-box {
+    text-align: right;
+    font-size: 13px;
+    color: #334155;
+    line-height: 1.5;
+}
+
+.quote-meta-box strong {
+    color: #0f172a;
+}
+
+.quote-client-card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.quote-client-name {
+    font-size: 16px;
+    font-weight: 700;
+    color: #1e293b;
+    margin-bottom: 2px;
+}
+
+.quote-client-sub {
+    font-size: 12px;
+    color: #64748b;
+}
+
+.quote-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 24px;
+    font-size: 13px;
+}
+
+.quote-table th {
+    background: #0f172a;
+    color: #fff;
+    padding: 10px 12px;
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.quote-table th.text-right {
+    text-align: right;
+}
+
+.quote-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    color: #1e293b;
+}
+
+.quote-table td.text-right {
+    text-align: right;
+}
+
+.quote-table tr:nth-child(even) {
+    background: #f8fafc;
+}
+
+.quote-price-special {
+    font-weight: 700;
+    color: #059669;
+    font-size: 14px;
+}
+
+.quote-savings-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #d1fae5;
+    color: #065f46;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.quote-footer {
+    border-top: 1px solid #e2e8f0;
+    padding-top: 18px;
+    font-size: 12px;
+    color: #64748b;
+    line-height: 1.6;
+}
+
+.quote-footer h5 {
+    margin: 0 0 6px 0;
+    font-size: 13px;
+    color: #1e293b;
+}
+
+/* Print Quotation Media Styles */
+@media print {
+    #proposalQuotationModal {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        background: #fff !important;
+        z-index: 999999;
+        display: block !important;
+        visibility: visible !important;
+    }
+
+    #proposalQuotationModal * {
+        visibility: visible !important;
+    }
+
+    .no-print {
+        display: none !important;
+    }
+
+    .proposal-print-sheet {
+        padding: 0 !important;
+        box-shadow: none !important;
+        border: none !important;
+    }
+}
+
+
