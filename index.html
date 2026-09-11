@@ -1824,7 +1824,7 @@
 
             <!-- KPI Cards -->
             <div class="kpi-grid proposal-kpi-grid">
-                <div class="kpi-card">
+                <div class="kpi-card kpi-prop-stopped">
                     <div class="kpi-icon-wrap">📦</div>
                     <div class="kpi-info">
                         <div class="kpi-label">Stopped Items</div>
@@ -1832,7 +1832,7 @@
                     </div>
                 </div>
 
-                <div class="kpi-card">
+                <div class="kpi-card kpi-prop-qty">
                     <div class="kpi-icon-wrap">📊</div>
                     <div class="kpi-info">
                         <div class="kpi-label">Hist. Monthly Qty</div>
@@ -1840,7 +1840,7 @@
                     </div>
                 </div>
 
-                <div class="kpi-card">
+                <div class="kpi-card kpi-prop-revenue">
                     <div class="kpi-icon-wrap">💵</div>
                     <div class="kpi-info">
                         <div class="kpi-label">Est. Monthly Revenue</div>
@@ -1848,7 +1848,7 @@
                     </div>
                 </div>
 
-                <div class="kpi-card">
+                <div class="kpi-card kpi-prop-margin">
                     <div class="kpi-icon-wrap">📈</div>
                     <div class="kpi-info">
                         <div class="kpi-label">Avg Proposal Margin</div>
@@ -1856,7 +1856,7 @@
                     </div>
                 </div>
 
-                <div class="kpi-card">
+                <div class="kpi-card kpi-prop-edge">
                     <div class="kpi-icon-wrap">🏷️</div>
                     <div class="kpi-info">
                         <div class="kpi-label">Competitive Edge</div>
@@ -1868,33 +1868,91 @@
             <!-- Proposal Table Container -->
             <div class="table-container proposal-table-container">
                 <div class="proposal-table-header-info">
-                    <span class="table-badge" id="proposalItemsBadge">0 items displayed</span>
-                    <span class="table-hint">💡 Tip: You can directly edit any <strong>Proposed Price</strong> cell below.</span>
+                    <div class="proposal-table-info-left">
+                        <span class="table-badge" id="proposalItemsBadge">0 items displayed</span>
+                        <span class="table-hint">💡 Tip: You can directly edit any <strong>Proposed Price</strong> cell below.</span>
+                    </div>
+                    <div class="proposal-table-toolbar">
+                        <!-- Table Quick Filter Dropdown -->
+                        <div class="proposal-table-filter-group" title="Filter items by proposal outcome or status">
+                            <span class="toolbar-filter-icon">🎯</span>
+                            <select class="filter-input proposal-table-select" id="proposalTableFilter">
+                                <option value="all">All Proposal Items</option>
+                                <option value="cheaper">📉 Cheaper (Win-Backs)</option>
+                                <option value="higher">📈 Price Increase</option>
+                                <option value="same">⚖️ Same Price</option>
+                                <option value="overrides">✏️ Custom Overrides</option>
+                                <option value="margin_good">🟢 High Margin (≥20%)</option>
+                                <option value="margin_fair">🟡 Fair Margin (10-20%)</option>
+                                <option value="margin_low">🔴 Low Margin (&lt;10%)</option>
+                                <option value="has_cost">✅ Has Cost (D1/Reorder)</option>
+                                <option value="no_cost">⚠️ No Cost Available</option>
+                            </select>
+                        </div>
+
+                        <!-- Table Sort Dropdown -->
+                        <div class="proposal-table-filter-group" title="Sort items">
+                            <span class="toolbar-filter-icon">↕️</span>
+                            <select class="filter-input proposal-table-select" id="proposalTableSort">
+                                <option value="volume_desc">📦 Volume (High → Low)</option>
+                                <option value="volume_asc">📦 Volume (Low → High)</option>
+                                <option value="value_desc">💰 Monthly Value (High → Low)</option>
+                                <option value="savings_desc">🎯 Client Savings % (High → Low)</option>
+                                <option value="margin_desc">📈 New Margin % (High → Low)</option>
+                                <option value="margin_asc">📉 New Margin % (Low → High)</option>
+                                <option value="inactive_desc">⏳ Months Inactive (Longest)</option>
+                                <option value="name_asc">🔤 Item Name (A → Z)</option>
+                                <option value="code_asc">🔢 Master Item Code (A → Z)</option>
+                            </select>
+                        </div>
+
+                        <!-- Table Quick Search -->
+                        <div class="proposal-table-search-wrap">
+                            <span class="toolbar-filter-icon">🔎</span>
+                            <input type="text" id="proposalTableSearch" class="filter-input proposal-table-search-input" placeholder="Quick filter table..." autocomplete="off">
+                            <button type="button" id="proposalTableSearchClearBtn" class="proposal-table-search-clear" title="Clear filter" style="display: none;">✕</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="table-scroll">
                     <table class="data-table proposal-table" id="proposalTable">
                         <thead>
                             <tr>
                                 <th class="text-center" style="width: 40px;">#</th>
-                                <th id="thProposalCustomer">Client</th>
-                                <th>Item Code</th>
-                                <th>Item Name</th>
+                                <th class="sortable-th" data-sort-field="masterCode" title="Click to sort by Master Item Code">
+                                    Master Item Code <span class="sort-indicator" id="sortInd_masterCode"></span>
+                                </th>
+                                <th class="sortable-th" data-sort-field="itemName" title="Click to sort by Item Name">
+                                    Item Name <span class="sort-indicator" id="sortInd_itemName"></span>
+                                </th>
                                 <th>Pack</th>
                                 <th>Last Active</th>
-                                <th class="text-center">Inactive</th>
-                                <th class="text-right">Avg Qty/Mo</th>
+                                <th class="text-center sortable-th" data-sort-field="monthsInactive" title="Click to sort by Inactivity">
+                                    Inactive <span class="sort-indicator" id="sortInd_monthsInactive"></span>
+                                </th>
+                                <th class="text-right sortable-th" data-sort-field="avgQty" title="Click to sort by Avg Qty/Mo">
+                                    Avg Qty/Mo <span class="sort-indicator" id="sortInd_avgQty"></span>
+                                </th>
                                 <th class="text-right">Last Selling Price</th>
                                 <th class="text-right">Latest Cost (D1)</th>
                                 <th class="text-right">Old Margin</th>
-                                <th class="text-right" style="min-width: 140px;">Proposed Price</th>
-                                <th class="text-right">New Margin</th>
-                                <th class="text-center">Price Change</th>
-                                <th class="text-right">Est. Monthly Value</th>
+                                <th class="text-right sortable-th" data-sort-field="proposedPrice" style="min-width: 140px;" title="Click to sort by Proposed Price">
+                                    Proposed Price <span class="sort-indicator" id="sortInd_proposedPrice"></span>
+                                </th>
+                                <th class="text-right sortable-th" data-sort-field="newMargin" title="Click to sort by New Margin">
+                                    New Margin <span class="sort-indicator" id="sortInd_newMargin"></span>
+                                </th>
+                                <th class="text-center sortable-th" data-sort-field="priceChange" title="Click to sort by Price Change">
+                                    Price Change <span class="sort-indicator" id="sortInd_priceChange"></span>
+                                </th>
+                                <th class="text-right sortable-th" data-sort-field="monthlyValue" title="Click to sort by Est. Monthly Value">
+                                    Est. Monthly Value <span class="sort-indicator" id="sortInd_monthlyValue"></span>
+                                </th>
                             </tr>
                         </thead>
                         <tbody id="proposalTableBody">
                             <tr>
-                                <td colspan="15" class="empty-msg">Loading price proposal data...</td>
+                                <td colspan="14" class="empty-msg">Loading price proposal data...</td>
                             </tr>
                         </tbody>
                     </table>
