@@ -5951,6 +5951,9 @@ function printSupplierReorderPO() {
 let proposalCustomer = 'ALL';
 let proposalMonthsMin = 2;
 let proposalSearchQuery = '';
+let proposalTableFilter = 'all';
+let proposalTableSort = 'volume_desc';
+let proposalTableSearchQuery = '';
 let proposalStrategyMode = 'target_margin'; // 'target_margin', 'markup_cost', 'match_previous', 'discount_old'
 let proposalStrategyValue = 20;
 let proposalRounding = '100';
@@ -5971,7 +5974,7 @@ function initPriceProposalTab() {
     // If Item Analysis data isn't loaded yet
     if (!rawData || rawData.length === 0 || !processedData || !processedData.droppedItems) {
         const tbody = document.getElementById('proposalTableBody');
-        if (tbody) tbody.innerHTML = '<tr><td colspan="15" class="empty-msg">Waiting for Item Analysis data to load...</td></tr>';
+        if (tbody) tbody.innerHTML = '<tr><td colspan="14" class="empty-msg">Waiting for Item Analysis data to load...</td></tr>';
         return;
     }
 
@@ -6036,25 +6039,39 @@ function indexSalesDataForProposal() {
         const desNorm = rawDes.toUpperCase();
         const custNorm = rawCust.toUpperCase();
 
+        // Calculate numeric timestamp/dateScore to keep the LAST (most recent) sale & description
+        let dateScore = 0;
+        if (dateStr) {
+            const parsed = parseDateSafe(dateStr);
+            if (parsed && !isNaN(parsed.getTime())) dateScore = parsed.getTime();
+        }
+        if (dateScore === 0 && (year > 0 || month > 0)) {
+            dateScore = (year * 100 + month) * 86400000;
+        }
+
         const itemDetails = {
             itemCode: rawCode,
             itemName: rawDes || rawMaster,
             packing: rawPack,
-            masterCode: rawMaster
+            masterCode: rawMaster,
+            dateScore: dateScore
         };
 
         if (masterNorm) {
-            if (!proposalMasterToD2[masterNorm] || (rawCode && !proposalMasterToD2[masterNorm].itemCode)) {
+            const prev = proposalMasterToD2[masterNorm];
+            if (!prev || (dateScore >= (prev.dateScore || 0) && rawDes)) {
                 proposalMasterToD2[masterNorm] = itemDetails;
             }
         }
         if (codeNorm) {
-            if (!proposalCodeToD2[codeNorm] || (rawDes && !proposalCodeToD2[codeNorm].itemName)) {
+            const prev = proposalCodeToD2[codeNorm];
+            if (!prev || (dateScore >= (prev.dateScore || 0) && rawDes)) {
                 proposalCodeToD2[codeNorm] = itemDetails;
             }
         }
         if (desNorm) {
-            if (!proposalNameToD2[desNorm] || (rawCode && !proposalNameToD2[desNorm].itemCode)) {
+            const prev = proposalNameToD2[desNorm];
+            if (!prev || (dateScore >= (prev.dateScore || 0))) {
                 proposalNameToD2[desNorm] = itemDetails;
             }
         }
@@ -6068,20 +6085,33 @@ function indexSalesDataForProposal() {
                 itemName: rawDes,
                 packing: rawPack,
                 itemCode: rawCode,
-                masterCode: rawMaster
+                masterCode: rawMaster,
+                dateScore: dateScore
             };
 
-            // Customer specific sale record
+            // Customer specific sale record - keep latest by dateScore
             if (custNorm) {
-                if (masterNorm) proposalCustLastSale[custNorm + '___' + masterNorm] = saleRecord;
-                if (codeNorm) proposalCustLastSale[custNorm + '___' + codeNorm] = saleRecord;
-                if (desNorm) proposalCustLastSale[custNorm + '___' + desNorm] = saleRecord;
+                const updateCustSale = (key) => {
+                    const prev = proposalCustLastSale[key];
+                    if (!prev || dateScore >= (prev.dateScore || 0)) {
+                        proposalCustLastSale[key] = saleRecord;
+                    }
+                };
+                if (masterNorm) updateCustSale(custNorm + '___' + masterNorm);
+                if (codeNorm) updateCustSale(custNorm + '___' + codeNorm);
+                if (desNorm) updateCustSale(custNorm + '___' + desNorm);
             }
 
-            // General item sale record
-            if (masterNorm) proposalItemLastSale[masterNorm] = saleRecord;
-            if (codeNorm) proposalItemLastSale[codeNorm] = saleRecord;
-            if (desNorm) proposalItemLastSale[desNorm] = saleRecord;
+            // General item sale record - keep latest by dateScore
+            const updateItemSale = (key) => {
+                const prev = proposalItemLastSale[key];
+                if (!prev || dateScore >= (prev.dateScore || 0)) {
+                    proposalItemLastSale[key] = saleRecord;
+                }
+            };
+            if (masterNorm) updateItemSale(masterNorm);
+            if (codeNorm) updateItemSale(codeNorm);
+            if (desNorm) updateItemSale(desNorm);
         }
     });
 
@@ -6265,6 +6295,51 @@ function populateProposalCustomerDropdown() {
     }
 }
 
+// ── Resolve Latest Item Name Fallback (Data1 / Reorder Sheet) ──
+function resolveFallbackItemName(itemCode, masterCode) {
+    const codeNorm = (itemCode || '').toString().trim().toUpperCase();
+    const masterNorm = (masterCode || '').toString().trim().toUpperCase();
+
+    // 1. Check Data1 (purchaseData)
+    if (purchaseData && purchaseData.length > 0) {
+        const pHeaders = Object.keys(purchaseData[0]);
+        const pCodeKey = pHeaders.find(h => h.toLowerCase().includes('item_code') && !h.toLowerCase().includes('master')) || pHeaders.find(h => h.toUpperCase().includes('ITEM CODE')) || pHeaders[0];
+        const pDesc2Key = pHeaders.find(h => h.toUpperCase().includes('DESCRIPTION2') || h.toUpperCase().includes('MASTER.DESCRIPTION2'));
+        const pItemNameKey = pHeaders.find(h => h.toUpperCase().includes('ITEM NAME') || h.toUpperCase().replace(/[\s_]/g, '').includes('ITEMNAME'));
+
+        for (let i = 0; i < purchaseData.length; i++) {
+            const row = purchaseData[i];
+            const pCode = (row[pCodeKey] || '').toString().trim().toUpperCase();
+            const desc2 = pDesc2Key ? (row[pDesc2Key] || '').toString().trim().toUpperCase() : '';
+            const name = pItemNameKey ? (row[pItemNameKey] || '').toString().trim() : '';
+
+            if (name && (pCode === codeNorm || pCode === masterNorm || desc2 === masterNorm || desc2 === codeNorm)) {
+                return name;
+            }
+        }
+    }
+
+    // 2. Check Reorder Sheet (reorderData)
+    if (reorderData && reorderData.length > 0) {
+        const rHeaders = Object.keys(reorderData[0]);
+        const rNameKey = rHeaders.find(h => h.toUpperCase().includes('ITEMNAM') || h.toUpperCase().includes('ITEM NAME'));
+        const rCodeKey = rHeaders.find(h => h.toUpperCase().includes('ITEMCODE') || h.toUpperCase().includes('ITEM CODE'));
+
+        if (rNameKey) {
+            for (let i = 0; i < reorderData.length; i++) {
+                const rRow = reorderData[i];
+                const rCode = rCodeKey ? (rRow[rCodeKey] || '').toString().trim().toUpperCase() : '';
+                const rName = (rRow[rNameKey] || '').toString().trim();
+                if (rName && (rCode === codeNorm || rCode === masterNorm || (masterNorm && rName.toUpperCase().includes(masterNorm)))) {
+                    return rName;
+                }
+            }
+        }
+    }
+
+    return '';
+}
+
 // ── Main Renderer for Table & KPIs ──
 function renderPriceProposal() {
     const tbody = document.getElementById('proposalTableBody');
@@ -6279,14 +6354,14 @@ function renderPriceProposal() {
 
     // Resolve details for each item
     proposalItems = filtered.map(d => {
-        const masterCode = d.itemCode;
-        const masterNorm = masterCode.toUpperCase();
+        const origMaster = d.itemCode;
+        const masterNorm = origMaster.toUpperCase();
         const custNorm = d.customer.toUpperCase();
 
         // 1. Resolve Data2 item details
         let d2Match = proposalMasterToD2[masterNorm] || proposalNameToD2[masterNorm] || proposalCodeToD2[masterNorm] || null;
-        let itemCode = d2Match ? d2Match.itemCode : masterCode;
-        let itemName = d2Match ? d2Match.itemName : masterCode;
+        let itemCode = d2Match ? d2Match.itemCode : origMaster;
+        let masterCode = (d2Match && d2Match.masterCode) ? d2Match.masterCode : origMaster;
         let packing = d2Match ? d2Match.packing : '';
 
         // 2. Resolve Last Selling Price to this client
@@ -6298,8 +6373,24 @@ function renderPriceProposal() {
         let lastSellingPrice = saleMatch ? saleMatch.unitPrice : 0;
         if (saleMatch) {
             if (saleMatch.packing && !packing) packing = saleMatch.packing;
-            if (saleMatch.itemName && (!itemName || itemName === masterCode)) itemName = saleMatch.itemName;
-            if (saleMatch.itemCode && (!itemCode || itemCode === masterCode)) itemCode = saleMatch.itemCode;
+            if (saleMatch.itemCode && (!itemCode || itemCode === origMaster)) itemCode = saleMatch.itemCode;
+            if (saleMatch.masterCode && (!masterCode || masterCode === origMaster)) masterCode = saleMatch.masterCode;
+        }
+
+        // Determine the latest item name (the last item name not item code)
+        let itemName = '';
+        if (saleMatch && saleMatch.itemName && saleMatch.itemName !== origMaster && saleMatch.itemName !== itemCode) {
+            itemName = saleMatch.itemName;
+        } else if (d2Match && d2Match.itemName && d2Match.itemName !== origMaster && d2Match.itemName !== itemCode) {
+            itemName = d2Match.itemName;
+        }
+
+        if (!itemName) {
+            itemName = resolveFallbackItemName(itemCode, masterCode);
+        }
+
+        if (!itemName) {
+            itemName = (d2Match && d2Match.itemName) ? d2Match.itemName : origMaster;
         }
 
         // 3. Resolve Current Cost from Data1 / Reorder
@@ -6307,7 +6398,7 @@ function renderPriceProposal() {
         const cost = costInfo.cost;
 
         // 4. Proposed Price & Override handling
-        const overrideKey = d.customer + '___' + masterCode;
+        const overrideKey = d.customer + '___' + origMaster;
         const hasOverride = proposalCustomOverrides[overrideKey] !== undefined;
         const proposedPrice = hasOverride ?
             proposalCustomOverrides[overrideKey] :
@@ -6344,20 +6435,124 @@ function renderPriceProposal() {
         };
     });
 
-    // Apply Search Filter if any
+    // ── Apply Table Status / Outcome Filter ──
     let displayItems = proposalItems;
-    if (proposalSearchQuery) {
+    if (proposalTableFilter && proposalTableFilter !== 'all') {
+        if (proposalTableFilter === 'cheaper') {
+            displayItems = displayItems.filter(i => i.diffVal < 0);
+        } else if (proposalTableFilter === 'higher') {
+            displayItems = displayItems.filter(i => i.diffVal > 0);
+        } else if (proposalTableFilter === 'same') {
+            displayItems = displayItems.filter(i => i.diffVal === 0 && i.lastSellingPrice > 0);
+        } else if (proposalTableFilter === 'overrides') {
+            displayItems = displayItems.filter(i => i.hasOverride);
+        } else if (proposalTableFilter === 'margin_good') {
+            displayItems = displayItems.filter(i => i.newMargin !== null && i.newMargin >= 20);
+        } else if (proposalTableFilter === 'margin_fair') {
+            displayItems = displayItems.filter(i => i.newMargin !== null && i.newMargin >= 10 && i.newMargin < 20);
+        } else if (proposalTableFilter === 'margin_low') {
+            displayItems = displayItems.filter(i => i.newMargin !== null && i.newMargin < 10);
+        } else if (proposalTableFilter === 'has_cost') {
+            displayItems = displayItems.filter(i => i.cost > 0);
+        } else if (proposalTableFilter === 'no_cost') {
+            displayItems = displayItems.filter(i => !i.cost || i.cost === 0);
+        }
+    }
+
+    // ── Apply Search Filter (both top search and in-table search) ──
+    const effectiveSearch = (proposalTableSearchQuery || proposalSearchQuery || '').trim().toLowerCase();
+    if (effectiveSearch) {
         displayItems = displayItems.filter(item =>
-            item.itemName.toLowerCase().includes(proposalSearchQuery) ||
-            item.itemCode.toLowerCase().includes(proposalSearchQuery) ||
-            item.masterCode.toLowerCase().includes(proposalSearchQuery) ||
-            item.packing.toLowerCase().includes(proposalSearchQuery) ||
-            item.customer.toLowerCase().includes(proposalSearchQuery)
+            (item.itemName && item.itemName.toLowerCase().includes(effectiveSearch)) ||
+            (item.masterCode && item.masterCode.toLowerCase().includes(effectiveSearch)) ||
+            (item.itemCode && item.itemCode.toLowerCase().includes(effectiveSearch)) ||
+            (item.packing && item.packing.toLowerCase().includes(effectiveSearch)) ||
+            (item.customer && item.customer.toLowerCase().includes(effectiveSearch))
         );
     }
 
-    // Sort: highest historical monthly volume first
-    displayItems.sort((a, b) => b.avgQtyPerMonth - a.avgQtyPerMonth);
+    // ── Sort items ──
+    switch (proposalTableSort) {
+        case 'volume_desc':
+            displayItems.sort((a, b) => b.avgQtyPerMonth - a.avgQtyPerMonth);
+            break;
+        case 'volume_asc':
+            displayItems.sort((a, b) => a.avgQtyPerMonth - b.avgQtyPerMonth);
+            break;
+        case 'value_desc':
+            displayItems.sort((a, b) => b.monthlyEstValue - a.monthlyEstValue);
+            break;
+        case 'value_asc':
+            displayItems.sort((a, b) => a.monthlyEstValue - b.monthlyEstValue);
+            break;
+        case 'savings_desc':
+            displayItems.sort((a, b) => {
+                const aSavings = (a.diffPct !== null && a.diffVal < 0) ? Math.abs(a.diffPct) : -999;
+                const bSavings = (b.diffPct !== null && b.diffVal < 0) ? Math.abs(b.diffPct) : -999;
+                return bSavings - aSavings;
+            });
+            break;
+        case 'savings_asc':
+            displayItems.sort((a, b) => {
+                const aSavings = (a.diffPct !== null && a.diffVal < 0) ? Math.abs(a.diffPct) : 999;
+                const bSavings = (b.diffPct !== null && b.diffVal < 0) ? Math.abs(b.diffPct) : 999;
+                return aSavings - bSavings;
+            });
+            break;
+        case 'margin_desc':
+            displayItems.sort((a, b) => (b.newMargin !== null ? b.newMargin : -999) - (a.newMargin !== null ? a.newMargin : -999));
+            break;
+        case 'margin_asc':
+            displayItems.sort((a, b) => (a.newMargin !== null ? a.newMargin : 999) - (b.newMargin !== null ? b.newMargin : 999));
+            break;
+        case 'price_desc':
+            displayItems.sort((a, b) => b.proposedPrice - a.proposedPrice);
+            break;
+        case 'price_asc':
+            displayItems.sort((a, b) => a.proposedPrice - b.proposedPrice);
+            break;
+        case 'inactive_desc':
+            displayItems.sort((a, b) => b.monthsInactive - a.monthsInactive);
+            break;
+        case 'inactive_asc':
+            displayItems.sort((a, b) => a.monthsInactive - b.monthsInactive);
+            break;
+        case 'name_asc':
+            displayItems.sort((a, b) => (a.itemName || '').localeCompare(b.itemName || ''));
+            break;
+        case 'name_desc':
+            displayItems.sort((a, b) => (b.itemName || '').localeCompare(a.itemName || ''));
+            break;
+        case 'code_asc':
+            displayItems.sort((a, b) => (a.masterCode || a.itemCode || '').localeCompare(b.masterCode || b.itemCode || ''));
+            break;
+        case 'code_desc':
+            displayItems.sort((a, b) => (b.masterCode || b.itemCode || '').localeCompare(a.masterCode || a.itemCode || ''));
+            break;
+        default:
+            displayItems.sort((a, b) => b.avgQtyPerMonth - a.avgQtyPerMonth);
+            break;
+    }
+
+    // ── Update Header Sort Indicators ──
+    document.querySelectorAll('.proposal-table th.sortable-th').forEach(th => {
+        const field = th.getAttribute('data-sort-field');
+        const ind = th.querySelector('.sort-indicator');
+        if (!ind) return;
+
+        let isDesc = false;
+        let isAsc = false;
+        if (field === 'masterCode') { isDesc = proposalTableSort === 'code_desc'; isAsc = proposalTableSort === 'code_asc'; }
+        else if (field === 'itemName') { isDesc = proposalTableSort === 'name_desc'; isAsc = proposalTableSort === 'name_asc'; }
+        else if (field === 'monthsInactive') { isDesc = proposalTableSort === 'inactive_desc'; isAsc = proposalTableSort === 'inactive_asc'; }
+        else if (field === 'avgQty') { isDesc = proposalTableSort === 'volume_desc'; isAsc = proposalTableSort === 'volume_asc'; }
+        else if (field === 'newMargin') { isDesc = proposalTableSort === 'margin_desc'; isAsc = proposalTableSort === 'margin_asc'; }
+        else if (field === 'priceChange') { isDesc = proposalTableSort === 'savings_desc'; isAsc = proposalTableSort === 'savings_asc'; }
+        else if (field === 'proposedPrice') { isDesc = proposalTableSort === 'price_desc'; isAsc = proposalTableSort === 'price_asc'; }
+        else if (field === 'monthlyValue') { isDesc = proposalTableSort === 'value_desc'; isAsc = proposalTableSort === 'value_asc'; }
+
+        ind.textContent = isDesc ? ' ▼' : (isAsc ? ' ▲' : '');
+    });
 
     // Update KPI Cards
     const totalItemsCount = displayItems.length;
@@ -6380,7 +6575,7 @@ function renderPriceProposal() {
 
     // Render Table Rows
     if (displayItems.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="15" class="empty-msg">No stopped items found for the selected criteria.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="14" class="empty-msg">No stopped items found for the selected criteria.</td></tr>';
         return;
     }
 
@@ -6416,11 +6611,9 @@ function renderPriceProposal() {
 
         return `<tr>
             <td class="text-center text-muted">${idx + 1}</td>
-            <td class="customer-name" title="${escapeHtml(item.customer)}">${escapeHtml(item.customer)}</td>
-            <td class="code-col" style="font-family: monospace; font-size: 12px;">${escapeHtml(item.itemCode || item.masterCode)}</td>
-            <td class="item-name" title="${escapeHtml(item.masterCode)}">
+            <td class="code-col" style="font-family: monospace; font-size: 12px;" title="Master Item Code: ${escapeHtml(item.masterCode || item.itemCode)}">${escapeHtml(item.masterCode || item.itemCode)}</td>
+            <td class="item-name" title="${escapeHtml(item.itemName)}">
                 <strong>${escapeHtml(item.itemName)}</strong>
-                ${item.masterCode !== item.itemName ? `<br><small class="text-muted">${escapeHtml(item.masterCode)}</small>` : ''}
             </td>
             <td><span class="pack-badge">${escapeHtml(item.packing || '1 PC')}</span></td>
             <td>${formatMonthLabel(item.lastMonth)}</td>
@@ -6573,6 +6766,78 @@ function setupProposalEventListeners() {
             if (modal) modal.style.display = 'none';
         });
     }
+
+    // Table Quick Filter
+    const tableFilterSelect = document.getElementById('proposalTableFilter');
+    if (tableFilterSelect) {
+        tableFilterSelect.addEventListener('change', (e) => {
+            proposalTableFilter = e.target.value;
+            renderPriceProposal();
+        });
+    }
+
+    // Table Sort Dropdown
+    const tableSortSelect = document.getElementById('proposalTableSort');
+    if (tableSortSelect) {
+        tableSortSelect.addEventListener('change', (e) => {
+            proposalTableSort = e.target.value;
+            renderPriceProposal();
+        });
+    }
+
+    // Table In-table Search
+    const tableSearchInput = document.getElementById('proposalTableSearch');
+    const tableSearchClearBtn = document.getElementById('proposalTableSearchClearBtn');
+    if (tableSearchInput) {
+        tableSearchInput.addEventListener('input', debounce((e) => {
+            proposalTableSearchQuery = (e.target.value || '').trim().toLowerCase();
+            if (tableSearchClearBtn) {
+                tableSearchClearBtn.style.display = proposalTableSearchQuery ? 'block' : 'none';
+            }
+            renderPriceProposal();
+        }, 200));
+    }
+
+    if (tableSearchClearBtn) {
+        tableSearchClearBtn.addEventListener('click', () => {
+            if (tableSearchInput) tableSearchInput.value = '';
+            tableSearchClearBtn.style.display = 'none';
+            proposalTableSearchQuery = '';
+            renderPriceProposal();
+        });
+    }
+
+    // Table Header Click Sort
+    document.querySelectorAll('.proposal-table th.sortable-th').forEach(th => {
+        th.addEventListener('click', () => {
+            const field = th.getAttribute('data-sort-field');
+            if (!field) return;
+
+            let fieldDesc = `${field}_desc`;
+            let fieldAsc = `${field}_asc`;
+            if (field === 'masterCode') { fieldDesc = 'code_desc'; fieldAsc = 'code_asc'; }
+            else if (field === 'itemName') { fieldDesc = 'name_desc'; fieldAsc = 'name_asc'; }
+            else if (field === 'monthsInactive') { fieldDesc = 'inactive_desc'; fieldAsc = 'inactive_asc'; }
+            else if (field === 'avgQty') { fieldDesc = 'volume_desc'; fieldAsc = 'volume_asc'; }
+            else if (field === 'newMargin') { fieldDesc = 'margin_desc'; fieldAsc = 'margin_asc'; }
+            else if (field === 'priceChange') { fieldDesc = 'savings_desc'; fieldAsc = 'savings_asc'; }
+            else if (field === 'proposedPrice') { fieldDesc = 'price_desc'; fieldAsc = 'price_asc'; }
+            else if (field === 'monthlyValue') { fieldDesc = 'value_desc'; fieldAsc = 'value_asc'; }
+
+            if (proposalTableSort === fieldDesc) {
+                proposalTableSort = fieldAsc;
+            } else {
+                proposalTableSort = fieldDesc;
+            }
+
+            if (tableSortSelect) {
+                const opt = tableSortSelect.querySelector(`option[value="${proposalTableSort}"]`);
+                if (opt) tableSortSelect.value = proposalTableSort;
+            }
+
+            renderPriceProposal();
+        });
+    });
 }
 
 // ── Export Proposal to CSV ──
@@ -6584,8 +6849,8 @@ function exportProposalCsv() {
 
     const headers = [
         'Customer',
+        'Master Item Code',
         'Item Code',
-        'Master Code',
         'Item Name',
         'Packing',
         'Last Active Month',
@@ -6604,8 +6869,8 @@ function exportProposalCsv() {
 
     const rows = proposalItems.map(i => [
         `"${(i.customer || '').replace(/"/g, '""')}"`,
-        `"${(i.itemCode || '').replace(/"/g, '""')}"`,
         `"${(i.masterCode || '').replace(/"/g, '""')}"`,
+        `"${(i.itemCode || '').replace(/"/g, '""')}"`,
         `"${(i.itemName || '').replace(/"/g, '""')}"`,
         `"${(i.packing || '').replace(/"/g, '""')}"`,
         `"${i.lastMonth || ''}"`,
@@ -6660,7 +6925,7 @@ function openProposalQuotationModal() {
 
         return `<tr>
             <td style="width: 30px; text-align: center;">${idx + 1}</td>
-            <td style="font-family: monospace; font-size: 11px;">${escapeHtml(item.itemCode || item.masterCode)}</td>
+            <td style="font-family: monospace; font-size: 11px;">${escapeHtml(item.masterCode || item.itemCode)}</td>
             <td><strong>${escapeHtml(item.itemName)}</strong></td>
             <td>${escapeHtml(item.packing || '1 PC')}</td>
             <td class="text-right">${item.lastSellingPrice > 0 ? formatMoney(item.lastSellingPrice) : '—'}</td>
@@ -6696,7 +6961,7 @@ function openProposalQuotationModal() {
             <thead>
                 <tr>
                     <th style="text-align: center;">#</th>
-                    <th>Item Code</th>
+                    <th>Master Item Code</th>
                     <th>Item Description</th>
                     <th>Packing</th>
                     <th class="text-right">Previous Price</th>
